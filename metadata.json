@@ -1,0 +1,8 @@
+{
+  "name": "MPLADS AI",
+  "description": "Fraud & Anomaly Detection Dashboard for MPLADS Scheme Implementation by Team Nova",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
