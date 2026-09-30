@@ -48,62 +48,69 @@ export const ProjectDetails: React.FC<ProjectDetailsProps> = ({
   const divergence = Math.round((project.utilization_percent - project.progress_percent) * 10) / 10;
   const isSevereDivergence = divergence > 40;
 
-  // Dynamic plain-English explanation incorporating natural event context, document and agency status
+  // Dynamic plain-English explanation incorporating delay context rules, document, and agency status
   const getDynamicExplanation = (p: EnrichedProject): string => {
     const {
       utilization_percent,
       progress_percent,
       delay_days,
       delay_reason,
+      supporting_document,
       supporting_event,
+      approved_extension,
+      extension_days,
       delay_context_status,
       document_verification_status,
       agency_verification_status,
       risk_level,
-      ai_anomaly
     } = p;
 
     const isNaturalEvent =
       delay_reason === 'Heavy Rainfall' ||
+      delay_reason === 'Flood / Natural Calamity' ||
       delay_reason === 'Flood' ||
       delay_reason === 'Natural Calamity';
 
-    // Base description of financial vs progress mismatch
-    if (risk_level === 'High Risk' && ai_anomaly === 'Anomaly Detected') {
-      let text = `${utilization_percent}% of the approved amount has been spent while physical progress is ${progress_percent}%, and the project has an ${delay_days}-day delay. The combination is unusual and has therefore been flagged for further investigation.`;
+    const isCompoundingRisk = delay_days > 30 && progress_percent < 40 && utilization_percent > 70;
+    const docRef = supporting_document || supporting_event || 'No documented context';
 
+    // Logic Rule 3 & 4: Unexcused delay requires investigation
+    if (delay_context_status === 'Delay Requires Investigation') {
+      let text = `Delay Requires Investigation: The project has an unexcused schedule delay of ${delay_days} days (${delay_reason}: ${docRef}) with no approved government extension.`;
+      if (isCompoundingRisk) {
+        text += ` Compounding risk detected: this long delay is combined with high expenditure (${utilization_percent}%) and low physical progress (${progress_percent}%), increasing the project risk tier.`;
+      }
       if (document_verification_status === 'Possible Duplicate/Inconsistency') {
-        text += ' Additionally, invoice verification flagged a possible duplicate or inconsistent voucher submission requiring priority review.';
+        text += ' Invoice verification also detected a possible duplicate or inconsistent voucher submission.';
       }
       if (agency_verification_status === 'Possible Duplicate / Inconsistent Agency Record') {
-        text += ' The implementing agency record also exhibits registration references shared with another entity.';
+        text += ' Implementing agency registration records also require verification.';
       }
       return text;
     }
 
-    // Projects with delay due to legitimate natural events
-    if (isNaturalEvent || delay_context_status === 'Contextual / Justified Delay') {
-      let text = `The project has a ${delay_days}-day delay associated with a documented natural event or approved statutory clearance (${delay_reason}: ${supporting_event}). Therefore, the delay is treated as contextual information rather than automatically increasing the risk.`;
-      if (utilization_percent <= progress_percent + 20) {
-        text += ` Fund utilization (${utilization_percent}%) remains proportional to progress (${progress_percent}%).`;
-      } else {
-        text += ` However, fund utilization (${utilization_percent}%) is being monitored against physical progress (${progress_percent}%).`;
+    // Logic Rule 1 & 2: Contextually justified delay
+    if (delay_context_status === 'Contextual / Justified Delay') {
+      if (isNaturalEvent && approved_extension) {
+        return `Contextually Justified Delay (Natural Event Exemption): The project has a ${delay_days}-day delay associated with a documented natural event (${delay_reason}: ${docRef}) and an approved statutory extension of ${extension_days || delay_days} days. In accordance with vigilance guidelines, project risk was NOT increased only because of the delay. Fund utilization is at ${utilization_percent}% with ${progress_percent}% physical progress.`;
       }
-      return text;
+      return `Contextually Justified Delay: The project has a ${delay_days}-day delay due to a valid documented reason (${delay_reason}: ${docRef}) with an approved extension of ${extension_days || delay_days} days. The delay is recognized as an excused schedule adjustment.`;
     }
 
-    if (ai_anomaly === 'Anomaly Detected') {
-      return `This project has been flagged by the AI detection model because it exhibits an unusual pattern between fund utilization (${utilization_percent}%), physical progress (${progress_percent}%), and schedule delay (${delay_days} days). This combination deviates from expected project milestones and requires further investigation.`;
+    // Default High Risk
+    if (risk_level === 'High Risk') {
+      let text = `High Risk Audit Alert: ${utilization_percent}% of the approved funds have been spent while physical progress is only ${progress_percent}%, with a delay of ${delay_days} days.`;
+      if (document_verification_status === 'Possible Duplicate/Inconsistency') {
+        text += ' In addition, invoice records show a possible duplicate claim requiring administrative review.';
+      }
+      return text;
     }
 
     if (risk_level === 'Medium Risk') {
-      if (delay_days > 30) {
-        return `This project has been flagged for medium risk primarily due to a ${delay_days}-day project delay (${delay_reason}) that requires monitoring, while fund utilization is at ${utilization_percent}% with ${progress_percent}% work progress. While not an immediate critical anomaly, this pattern requires milestone verification to prevent compounding delays.`;
-      }
-      return `This project exhibits a medium risk profile with ${utilization_percent}% fund utilization and ${progress_percent}% progress. Regular monitoring is recommended to ensure expenditure aligns with ongoing physical milestones.`;
+      return `Medium Risk Monitoring: Fund utilization is at ${utilization_percent}% with ${progress_percent}% work completed and a delay of ${delay_days} days (${delay_reason}). Regular milestone verification is recommended.`;
     }
 
-    return `This project is performing within normal parameters with ${utilization_percent}% fund utilization and ${progress_percent}% work progress, with a delay of only ${delay_days} days. Document records and agency registrations appear consistent with available data.`;
+    return `Normal Parameters: This project is progressing with ${utilization_percent}% fund utilization, ${progress_percent}% work progress, and a nominal delay of ${delay_days} days within standard construction tolerances.`;
   };
 
   const dynamicExplanation = getDynamicExplanation(project);
@@ -296,12 +303,76 @@ export const ProjectDetails: React.FC<ProjectDetailsProps> = ({
                 project.delay_context_status === 'Contextual / Justified Delay'
                   ? 'bg-emerald-500/20 text-emerald-400'
                   : project.delay_context_status === 'Delay Requires Investigation'
-                  ? 'bg-amber-500/20 text-amber-400'
+                  ? 'bg-red-500/20 text-red-400'
                   : 'bg-slate-800 text-slate-400'
               }`}
             >
-              {project.delay_context_status === 'Contextual / Justified Delay' ? '🟢 Contextual' : project.delay_context_status === 'Delay Requires Investigation' ? '🟡 Under Review' : '⏱️ Normal'}
+              {project.delay_context_status === 'Contextual / Justified Delay' ? '🟢 Contextual' : project.delay_context_status === 'Delay Requires Investigation' ? '🔴 Under Review' : '⏱️ Normal'}
             </span>
+          </div>
+        </div>
+
+        {/* Dedicated Delay Context Section with 5 Required Fields */}
+        <div className="p-3.5 bg-slate-900/90 rounded-lg border border-slate-800 space-y-2.5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-2">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-white uppercase tracking-wider">
+              <CloudRain className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Delay Context</span>
+            </div>
+            <span
+              className={`px-2.5 py-0.5 rounded text-[11px] font-bold ${
+                project.delay_context_status === 'Contextual / Justified Delay'
+                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                  : project.delay_context_status === 'Delay Requires Investigation'
+                  ? 'bg-red-500/20 text-red-300 border border-red-500/30'
+                  : 'bg-slate-800 text-slate-400'
+              }`}
+            >
+              {project.delay_context_status === 'Contextual / Justified Delay'
+                ? '🟢 Contextually Justified Delay'
+                : project.delay_context_status === 'Delay Requires Investigation'
+                ? '🔴 Delay Requires Investigation'
+                : '⏱️ Normal Schedule Timeline'}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 text-xs">
+            <div className="p-2 bg-slate-950 rounded border border-slate-800">
+              <span className="text-[10px] text-slate-400 uppercase font-semibold block">Delay Days</span>
+              <span className="text-sm font-bold text-rose-400 font-mono mt-0.5 block">{project.delay_days} days</span>
+            </div>
+
+            <div className="p-2 bg-slate-950 rounded border border-slate-800">
+              <span className="text-[10px] text-slate-400 uppercase font-semibold block">Delay Reason</span>
+              <span className="text-xs font-bold text-white mt-0.5 block truncate" title={project.delay_reason}>
+                {project.delay_reason}
+              </span>
+            </div>
+
+            <div className="p-2 bg-slate-950 rounded border border-slate-800 sm:col-span-1">
+              <span className="text-[10px] text-slate-400 uppercase font-semibold block">Supporting Context / Doc</span>
+              <span className="text-[11px] font-mono text-slate-300 mt-0.5 block truncate" title={project.supporting_document || project.supporting_event}>
+                {project.supporting_document || project.supporting_event || 'None'}
+              </span>
+            </div>
+
+            <div className="p-2 bg-slate-950 rounded border border-slate-800">
+              <span className="text-[10px] text-slate-400 uppercase font-semibold block">Approved Extension</span>
+              <span className={`text-xs font-bold mt-0.5 inline-block px-2 py-0.2 rounded ${
+                project.approved_extension
+                  ? 'bg-emerald-500/20 text-emerald-400'
+                  : 'bg-red-500/20 text-red-400'
+              }`}>
+                {project.approved_extension ? 'Yes' : 'No'}
+              </span>
+            </div>
+
+            <div className="p-2 bg-slate-950 rounded border border-slate-800">
+              <span className="text-[10px] text-slate-400 uppercase font-semibold block">Extension Days</span>
+              <span className="text-sm font-bold text-slate-200 font-mono mt-0.5 block">
+                {project.approved_extension ? `${project.extension_days || project.delay_days} days` : '0 days'}
+              </span>
+            </div>
           </div>
         </div>
       </div>

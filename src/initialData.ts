@@ -224,9 +224,11 @@ export const INITIAL_PROJECTS: RawProject[] = [
     progress_percent: 25,
     delay_days: 80,
     completion_status: "Ongoing",
-    delay_reason: "Unknown / No Documented Reason",
+    delay_reason: "Other / Unknown",
     supporting_event: "None reported by executing agency",
+    supporting_document: "None / Inspection Notice Unanswered",
     approved_extension: false,
+    extension_days: 0,
     agency_id: "AG-CHE-01",
     agency_name: "Apex Infrastructure & Works Ltd"
   },
@@ -242,7 +244,9 @@ export const INITIAL_PROJECTS: RawProject[] = [
     completion_status: "Ongoing",
     delay_reason: "Material Supply Delay",
     supporting_event: "Aggregate supply transport strike (4 days)",
+    supporting_document: "PWD Road Material Interruption Registry Memo PWD/VEL/2024/04",
     approved_extension: true,
+    extension_days: 15,
     agency_id: "AG-VEL-02",
     agency_name: "Vellore Engineering Services"
   },
@@ -258,7 +262,9 @@ export const INITIAL_PROJECTS: RawProject[] = [
     completion_status: "Ongoing",
     delay_reason: "Heavy Rainfall",
     supporting_event: "Intermittent pre-monsoon showers",
+    supporting_document: "IMD Salem Weather Bulletin IMD/SAL/2024/09",
     approved_extension: true,
+    extension_days: 10,
     agency_id: "AG-SAL-03",
     agency_name: "Salem Civil & Water Utilities Pvt Ltd"
   },
@@ -274,7 +280,9 @@ export const INITIAL_PROJECTS: RawProject[] = [
     completion_status: "Ongoing",
     delay_reason: "Government Approval Delay",
     supporting_event: "Fire safety layout revision clearance",
+    supporting_document: "Madurai Fire & Rescue Services Layout Approval Letter FIR/MAD/2024/44",
     approved_extension: true,
+    extension_days: 30,
     agency_id: "AG-MAD-04",
     agency_name: "Madurai Public Works Consortium"
   },
@@ -290,7 +298,9 @@ export const INITIAL_PROJECTS: RawProject[] = [
     completion_status: "Ongoing",
     delay_reason: "Material Supply Delay",
     supporting_event: "LED fixture batch delivery delay",
+    supporting_document: "TANGEDCO Electrical Delivery Manifest",
     approved_extension: true,
+    extension_days: 10,
     agency_id: "AG-COI-05",
     agency_name: "Kongu Infra Developments"
   },
@@ -306,7 +316,9 @@ export const INITIAL_PROJECTS: RawProject[] = [
     completion_status: "Delayed",
     delay_reason: "Heavy Rainfall",
     supporting_event: "Cauvery Delta Monsoon Flooding Alert Nov 2024",
-    approved_extension: true, // Justified legitimate delay!
+    supporting_document: "Tamil Nadu SDMA Flood Emergency Relief Notification SDMA/TRI/2024/08",
+    approved_extension: true,
+    extension_days: 60,
     agency_id: "AG-TRI-06",
     agency_name: "Delta Buildcon Enterprises"
   },
@@ -322,7 +334,9 @@ export const INITIAL_PROJECTS: RawProject[] = [
     completion_status: "Delayed",
     delay_reason: "Government Approval Delay",
     supporting_event: "Coastal CRZ clearance & High Tide boundary survey",
-    approved_extension: true, // Justified statutory clearance!
+    supporting_document: "TNCZMA Coastal Regulation Clearance Resolution 14/CZMA/2024",
+    approved_extension: true,
+    extension_days: 90,
     agency_id: "AG-CHE-07",
     agency_name: "Metro Urban Drainage Contractors"
   },
@@ -338,7 +352,9 @@ export const INITIAL_PROJECTS: RawProject[] = [
     completion_status: "Ongoing",
     delay_reason: "Government Approval Delay",
     supporting_event: "Hospital equipment electrification blueprint approval",
+    supporting_document: "DMS Healthcare Electrification Compliance Order DMS/VEL/2024/19",
     approved_extension: true,
+    extension_days: 20,
     agency_id: "AG-VEL-02",
     agency_name: "Vellore Engineering Services"
   },
@@ -354,7 +370,9 @@ export const INITIAL_PROJECTS: RawProject[] = [
     completion_status: "Ongoing",
     delay_reason: "Material Supply Delay",
     supporting_event: "Stainless steel pipe transit delay",
+    supporting_document: "State Transport Infrastructure Material Consignment Receipt",
     approved_extension: true,
+    extension_days: 5,
     agency_id: "AG-SAL-03",
     agency_name: "Salem Civil & Water Utilities Pvt Ltd"
   },
@@ -370,7 +388,9 @@ export const INITIAL_PROJECTS: RawProject[] = [
     completion_status: "Ongoing",
     delay_reason: "Material Supply Delay",
     supporting_event: "Furniture finishing touch delay",
+    supporting_document: "Madurai District Library Supply Order Acknowledgement",
     approved_extension: true,
+    extension_days: 5,
     agency_id: "AG-MAD-04",
     agency_name: "Madurai Public Works Consortium"
   },
@@ -384,9 +404,11 @@ export const INITIAL_PROJECTS: RawProject[] = [
     progress_percent: 50,
     delay_days: 25,
     completion_status: "Ongoing",
-    delay_reason: "Land/Permission Issue",
+    delay_reason: "Land / Permission Issue",
     supporting_event: "Municipal boundary demarcation survey",
+    supporting_document: "Coimbatore Municipal Revenue Demarcation Gazette Order",
     approved_extension: true,
+    extension_days: 30,
     agency_id: "AG-COI-05",
     agency_name: "Kongu Infra Developments"
   },
@@ -400,9 +422,11 @@ export const INITIAL_PROJECTS: RawProject[] = [
     progress_percent: 35,
     delay_days: 75,
     completion_status: "Delayed",
-    delay_reason: "Unknown / No Documented Reason",
+    delay_reason: "Other / Unknown",
     supporting_event: "No site inspection log submitted",
+    supporting_document: "None / Inspection Notice Unacknowledged",
     approved_extension: false,
+    extension_days: 0,
     agency_id: "AG-TRI-06",
     agency_name: "Delta Buildcon Enterprises"
   },
@@ -418,7 +442,9 @@ export const INITIAL_PROJECTS: RawProject[] = [
     completion_status: "Ongoing",
     delay_reason: "Heavy Rainfall",
     supporting_event: "Northeast Monsoon Waterlogging in North Chennai",
-    approved_extension: true, // Justified natural event!
+    supporting_document: "Greater Chennai Corporation Inundation Notification GCC/MON/2024/31",
+    approved_extension: true,
+    extension_days: 45,
     agency_id: "AG-CHE-01",
     agency_name: "Apex Infrastructure & Works Ltd"
   },
@@ -432,9 +458,11 @@ export const INITIAL_PROJECTS: RawProject[] = [
     progress_percent: 50,
     delay_days: 30,
     completion_status: "Ongoing",
-    delay_reason: "Land/Permission Issue",
+    delay_reason: "Land / Permission Issue",
     supporting_event: "National Highway trenching permission wait",
+    supporting_document: "NHAI Highway Right-of-Way Trenching Clearance NHAI/RO/VEL/2024/12",
     approved_extension: true,
+    extension_days: 35,
     agency_id: "AG-VEL-09",
     agency_name: "Ranipet Pipeline Corp"
   },
@@ -450,7 +478,9 @@ export const INITIAL_PROJECTS: RawProject[] = [
     completion_status: "Completed",
     delay_reason: "Material Supply Delay",
     supporting_event: "Ceramic tile procurement delivery",
+    supporting_document: "District Education Officer Inspection Certificate DEO/SAL/2024/02",
     approved_extension: true,
+    extension_days: 5,
     agency_id: "AG-SAL-03",
     agency_name: "Salem Civil & Water Utilities Pvt Ltd"
   },
@@ -466,7 +496,9 @@ export const INITIAL_PROJECTS: RawProject[] = [
     completion_status: "Delayed",
     delay_reason: "Contractor Issue",
     supporting_event: "Executing contractor stopped work without notice",
+    supporting_document: "Default Notice PWD/MAD/2024/88 (No Extension)",
     approved_extension: false,
+    extension_days: 0,
     agency_id: "AG-MAD-08",
     agency_name: "Star Health Infrastructure Partners"
   },
@@ -482,7 +514,9 @@ export const INITIAL_PROJECTS: RawProject[] = [
     completion_status: "Ongoing",
     delay_reason: "Government Approval Delay",
     supporting_event: "Traffic police daytime work permit restriction",
+    supporting_document: "City Traffic Police Restriction Advisory Order CTP/CBE/2024/07",
     approved_extension: true,
+    extension_days: 20,
     agency_id: "AG-COI-05",
     agency_name: "Kongu Infra Developments"
   },
@@ -498,7 +532,9 @@ export const INITIAL_PROJECTS: RawProject[] = [
     completion_status: "Ongoing",
     delay_reason: "Material Supply Delay",
     supporting_event: "Transformer pole connection wait",
+    supporting_document: "TNEB Trichy North Power Grid Tie-in Certificate",
     approved_extension: true,
+    extension_days: 10,
     agency_id: "AG-TRI-06",
     agency_name: "Delta Buildcon Enterprises"
   },
@@ -514,7 +550,9 @@ export const INITIAL_PROJECTS: RawProject[] = [
     completion_status: "Ongoing",
     delay_reason: "Heavy Rainfall",
     supporting_event: "Intermittent cloudburst water recession wait",
+    supporting_document: "Chennai Regional Meteorological Centre Weather Log RMC/CHE/2024/51",
     approved_extension: true,
+    extension_days: 15,
     agency_id: "AG-CHE-07",
     agency_name: "Metro Urban Drainage Contractors"
   },
@@ -530,7 +568,9 @@ export const INITIAL_PROJECTS: RawProject[] = [
     completion_status: "Ongoing",
     delay_reason: "Government Approval Delay",
     supporting_event: "Underground sewerage connection inspection",
+    supporting_document: "Vellore TWAD Board Drainage Interconnection Approval",
     approved_extension: true,
+    extension_days: 15,
     agency_id: "AG-VEL-02",
     agency_name: "Vellore Engineering Services"
   }

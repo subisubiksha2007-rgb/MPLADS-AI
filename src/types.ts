@@ -4,12 +4,15 @@ export type AnomalyStatus = 'Anomaly Detected' | 'Normal';
 
 export type DelayReasonType =
   | 'Heavy Rainfall'
+  | 'Flood / Natural Calamity'
   | 'Flood'
   | 'Natural Calamity'
   | 'Government Approval Delay'
+  | 'Land / Permission Issue'
   | 'Land/Permission Issue'
   | 'Material Supply Delay'
   | 'Contractor Issue'
+  | 'Other / Unknown'
   | 'Unknown / No Documented Reason';
 
 export type DelayContextStatus =
@@ -69,7 +72,9 @@ export interface RawProject {
   completion_status: CompletionStatus;
   delay_reason: DelayReasonType;
   supporting_event: string;
+  supporting_document?: string;
   approved_extension: boolean;
+  extension_days?: number;
   agency_id: string;
   agency_name: string;
 }
@@ -85,6 +90,8 @@ export interface EnrichedProject extends RawProject {
   delay_context_status: DelayContextStatus;
   document_verification_status: DocumentVerificationStatus;
   agency_verification_status: AgencyVerificationStatus;
+  supporting_document: string;
+  extension_days: number;
 }
 
 export interface FilterState {

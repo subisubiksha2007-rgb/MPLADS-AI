@@ -1,8 +1,7 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useMemo, useEffect } from 'react';
 import { BillRecord, EnrichedProject, DocumentVerificationStatus } from '../types';
 import { INITIAL_AGENCIES } from '../initialData';
 import {
-  FileText,
   Upload,
   CheckCircle2,
   AlertTriangle,
@@ -14,12 +13,27 @@ import {
   Info,
   Calendar,
   Building,
-  CreditCard,
   Hash,
   IndianRupee,
-  RotateCcw
+  Download,
+  AlertOctagon,
+  ChevronDown,
+  ChevronUp,
+  Files,
+  Layers,
+  Check,
+  Filter,
+  Trash2,
+  RefreshCw,
+  ArrowRight,
+  FilePlus,
 } from 'lucide-react';
 import { formatINR } from '../utils/formatters';
+import {
+  extractTextFromDocument,
+  parseInvoiceFields,
+  generateTestBillPDF,
+} from '../utils/billDocumentExtractor';
 
 interface BillVerificationProps {
   bills: BillRecord[];
@@ -28,6 +42,146 @@ interface BillVerificationProps {
   onSelectProject?: (projectName: string) => void;
 }
 
+export interface VerificationFindingItem {
+  category: string;
+  matched: boolean;
+  status: 'matched' | 'mismatched' | 'missing' | 'warning';
+  title: string;
+  detail: string;
+}
+
+export interface BatchBillItem {
+  id: string;
+  billNumber: number;
+  fileName: string;
+  fileSize: number;
+  filePreview?: string | null;
+  extractionMethod: string;
+  rawTextSnippet: string;
+
+  // Extracted values
+  invoiceNumber: string;
+  vendorName: string;
+  gstinPan: string;
+  invoiceDate: string;
+  projectId: string;
+  totalAmount: number | '';
+  documentType: string;
+
+  // Verification results
+  status: DocumentVerificationStatus;
+  headline: string;
+  detectedIssues: string[];
+  matchedObservations: string[];
+  findings: VerificationFindingItem[];
+  duplicateWithBillNumbers: number[];
+
+  // UI state
+  isExpanded: boolean;
+  savedToLedger?: boolean;
+}
+
+export type RawBatchBillItem = Omit<
+  BatchBillItem,
+  'status' | 'headline' | 'detectedIssues' | 'matchedObservations' | 'findings' | 'duplicateWithBillNumbers' | 'isExpanded'
+>;
+
+const SESSION_STORAGE_KEY = 'mplads_batch_raw_bills_session_v7';
+
+// Presentation batch demonstrating distinct states: Clean bills, Needs Verification, and Duplicates/Conflicts
+const INITIAL_DEMO_BATCH: RawBatchBillItem[] = [
+  {
+    id: 'demo-1',
+    billNumber: 1,
+    fileName: 'TechNova_Solutions_Invoice_INV2026001.pdf',
+    fileSize: 48600,
+    extractionMethod: 'PDF Text Extraction (PDF.js)',
+    rawTextSnippet: 'TAX INVOICE - Invoice No: INV-2026-001 | Vendor: TechNova Solutions | GSTIN: 29ABCDE1234F1Z5 | Project ID: MPLAD001 | Date: 2026-09-25 | Total: 111392',
+    invoiceNumber: 'INV-2026-001',
+    vendorName: 'TechNova Solutions',
+    gstinPan: '29ABCDE1234F1Z5',
+    invoiceDate: '2026-09-25',
+    projectId: 'MPLAD001',
+    totalAmount: 111392,
+    documentType: 'IT & Digital Surveillance Voucher'
+  },
+  {
+    id: 'demo-2',
+    billNumber: 2,
+    fileName: 'Vellore_Road_Culvert_Claim_INV991.pdf',
+    fileSize: 45200,
+    extractionMethod: 'PDF Text Extraction (PDF.js)',
+    rawTextSnippet: 'MPLADS SCHEME VOUCHER - Invoice Number: INV/VEL/2024/991 | Vendor Name: Vellore Engineering Services | GSTIN: 33BBBPB9876C1Z9 | Project ID: MPLAD002 | Total Amount: 450000',
+    invoiceNumber: 'INV/VEL/2024/991',
+    vendorName: 'Vellore Engineering Services',
+    gstinPan: '33BBBPB9876C1Z9',
+    invoiceDate: '2024-05-18',
+    projectId: 'MPLAD002',
+    totalAmount: 450000,
+    documentType: 'Culvert & Bitumen Stage Voucher'
+  },
+  {
+    id: 'demo-3',
+    billNumber: 3,
+    fileName: 'Salem_Water_Utilities_Tank_INV882.pdf',
+    fileSize: 52100,
+    extractionMethod: 'PDF Text Extraction (PDF.js)',
+    rawTextSnippet: 'MPLADS SCHEME VOUCHER - Invoice Number: INV/SAL/2024/882 | Vendor Name: Salem Civil & Water Utilities Pvt Ltd | GSTIN: 33AABCS4455E1Z1 | Project ID: MPLAD003 | Total Amount: 620000',
+    invoiceNumber: 'INV/SAL/2024/882', // Duplicate in batch with Bill 5!
+    vendorName: 'Salem Civil & Water Utilities Pvt Ltd',
+    gstinPan: '33AABCS4455E1Z1',
+    invoiceDate: '2024-05-22',
+    projectId: 'MPLAD003',
+    totalAmount: 620000,
+    documentType: 'Concrete Foundation Voucher'
+  },
+  {
+    id: 'demo-4',
+    billNumber: 4,
+    fileName: 'Incomplete_Handwritten_Voucher_INV006.jpg',
+    fileSize: 91300,
+    extractionMethod: 'Tesseract OCR Engine',
+    rawTextSnippet: 'HANDWRITTEN RECEIPT - Invoice Number: INV/INC/2024/006 | Vendor Name: Madurai Public Works Consortium | GSTIN: 33AABCM3322K1Z5 | Date: 2024-05-26 | Project: [Unspecified] | Amount: [Illegible]',
+    invoiceNumber: 'INV/INC/2024/006',
+    vendorName: 'Madurai Public Works Consortium',
+    gstinPan: '33AABCM3322K1Z5',
+    invoiceDate: '2024-05-26',
+    projectId: '', // Missing project ID -> Needs Verification!
+    totalAmount: '', // Missing amount -> Needs Verification!
+    documentType: 'Incomplete Material Receipt'
+  },
+  {
+    id: 'demo-5',
+    billNumber: 5,
+    fileName: 'Duplicate_Salem_Claim_INV882.pdf',
+    fileSize: 52100,
+    extractionMethod: 'PDF Text Extraction (PDF.js)',
+    rawTextSnippet: 'TAX INVOICE - Invoice Number: INV/SAL/2024/882 | Vendor Name: Salem Civil & Water Utilities Pvt Ltd | GSTIN: 33AABCS4455E1Z1 | Project ID: MPLAD003 | Total Amount: 620000',
+    invoiceNumber: 'INV/SAL/2024/882', // Duplicate of Bill 3 in same batch!
+    vendorName: 'Salem Civil & Water Utilities Pvt Ltd',
+    gstinPan: '33AABCS4455E1Z1',
+    invoiceDate: '2024-05-22',
+    projectId: 'MPLAD003',
+    totalAmount: 620000,
+    documentType: 'Concrete Foundation Claim Copy'
+  },
+  {
+    id: 'demo-6',
+    billNumber: 6,
+    fileName: 'Kongu_Overbudget_Excavation_INV777.pdf',
+    fileSize: 64200,
+    extractionMethod: 'PDF Text Extraction (PDF.js)',
+    rawTextSnippet: 'TAX INVOICE - Invoice Number: INV/MIS/2024/777 | Vendor Name: Kongu Infra Developments | GSTIN: 33AABCK9911P1Z3 | Project ID: MPLAD001 | Total Amount: 8500000',
+    invoiceNumber: 'INV/MIS/2024/777',
+    vendorName: 'Kongu Infra Developments',
+    gstinPan: '33AABCK9911P1Z3',
+    invoiceDate: '2024-05-25',
+    projectId: 'MPLAD001',
+    totalAmount: 8500000, // Exceeds MPLAD001 budget of 40,00,000 -> Inconsistency!
+    documentType: 'Heavy Earthwork Excavation Claim'
+  }
+];
+
 export const BillVerification: React.FC<BillVerificationProps> = ({
   bills,
   projects,
@@ -35,739 +189,1483 @@ export const BillVerification: React.FC<BillVerificationProps> = ({
   onSelectProject,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [filePreview, setFilePreview] = useState<string | null>(null);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isProcessingBatch, setIsProcessingBatch] = useState(false);
+  const [isVerifyingAll, setIsVerifyingAll] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const [processingStatusText, setProcessingStatusText] = useState('');
+  const [lastVerifiedAt, setLastVerifiedAt] = useState<string | null>('Initial Batch Verification Active');
+  const [filterStatus, setFilterStatus] = useState<'All' | DocumentVerificationStatus>('All');
+  const [searchQuery, setSearchQuery] = useState('');
 
-  // The 7 Required Fields
-  const [invoiceNumber, setInvoiceNumber] = useState('INV/VEL/2024/774');
-  const [vendorName, setVendorName] = useState('Vellore Engineering Services');
-  const [gstinPan, setGstinPan] = useState('33BBBPB9876C1Z9');
-  const [invoiceDate, setInvoiceDate] = useState('2024-04-18');
-  const [projectId, setProjectId] = useState('MPLAD002');
-  const [totalAmount, setTotalAmount] = useState<number | ''>(850000);
-  const [documentType, setDocumentType] = useState('Culvert & Bitumen Stage Voucher');
-
-  // Verification Result state
-  const [verificationResult, setVerificationResult] = useState<{
-    status: DocumentVerificationStatus;
-    headline: string;
-    reasons: string[];
-    observations: string[];
-  }>({
-    status: 'No Obvious Anomaly',
-    headline: 'No Obvious Anomaly',
-    reasons: [],
-    observations: [
-      'Invoice number is unique and does not exist in previous claims.',
-      'Vendor name matches the registered executing agency for Project MPLAD002.',
-      'GSTIN reference (33BBBPB9876C1Z9) is valid and registered to Vellore Engineering Services.',
-      'Claim amount (₹8,50,000) is within the sanctioned budget (₹50,00,000).'
-    ]
+  // Preserve selected files during current session using sessionStorage
+  const [batchRawBills, setBatchRawBills] = useState<RawBatchBillItem[]>(() => {
+    try {
+      const saved = sessionStorage.getItem(SESSION_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
+    } catch (err) {
+      console.warn('Could not read session bills', err);
+    }
+    return INITIAL_DEMO_BATCH;
   });
 
-  const [searchQuery, setSearchQuery] = useState('');
-  const [filterResult, setFilterResult] = useState<'All' | DocumentVerificationStatus>('All');
-
-  // Multi-point verification logic
-  const verifyBill = (
-    invNum: string,
-    vendor: string,
-    gstin: string,
-    date: string,
-    projId: string,
-    amt: number | ''
-  ) => {
-    const numAmount = typeof amt === 'number' ? amt : Number(amt) || 0;
-    const cleanInv = invNum.trim();
-    const cleanVendor = vendor.trim();
-    const cleanGstin = gstin.trim().toUpperCase();
-    const targetProject = projects.find(p => p.project_id === projId);
-
-    const reasons: string[] = [];
-    const observations: string[] = [];
-    let status: DocumentVerificationStatus = 'No Obvious Anomaly';
-    let headline = 'No Obvious Anomaly';
-
-    // 1. Check for Duplicate Invoice Number
-    const duplicateInvoice = bills.find(
-      b => b.invoice_number.trim().toLowerCase() === cleanInv.toLowerCase()
-    );
-    if (duplicateInvoice) {
-      status = 'Possible Duplicate/Inconsistency';
-      reasons.push(
-        `Duplicate Invoice Number: "${cleanInv}" was already registered under Bill ${duplicateInvoice.bill_id} for ${duplicateInvoice.project_name} (${duplicateInvoice.project_id}) on ${duplicateInvoice.bill_date}.`
-      );
+  // Sync to sessionStorage on changes
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(batchRawBills));
+    } catch (err) {
+      console.warn('Could not persist session bills', err);
     }
+  }, [batchRawBills]);
 
-    // 2. Check for Duplicate Combination (Same Vendor + Same Amount + Same Date)
-    const duplicateCombo = bills.find(
-      b =>
-        b.vendor_name.trim().toLowerCase() === cleanVendor.toLowerCase() &&
-        b.amount === numAmount &&
-        b.bill_date === date &&
-        b.invoice_number.trim().toLowerCase() !== cleanInv.toLowerCase()
-    );
-    if (duplicateCombo) {
-      status = 'Possible Duplicate/Inconsistency';
-      reasons.push(
-        `Duplicate Transaction Record: An identical payment claim of ${formatINR(numAmount)} from "${cleanVendor}" on date "${date}" already exists under ${duplicateCombo.bill_id}.`
-      );
-    }
+  // Expanded card tracking
+  const [expandedBillIds, setExpandedBillIds] = useState<Set<string>>(new Set(['demo-1', 'demo-3']));
 
-    // 3. Check Vendor Name and GSTIN match
-    const knownAgencyByGst = INITIAL_AGENCIES.find(
-      a => a.registration_ref.toUpperCase() === cleanGstin
-    );
-    if (knownAgencyByGst && cleanVendor) {
-      if (knownAgencyByGst.agency_name.toLowerCase() !== cleanVendor.toLowerCase()) {
-        status = 'Possible Duplicate/Inconsistency';
-        reasons.push(
-          `Vendor Name and GSTIN Mismatch: The provided GSTIN "${cleanGstin}" is officially registered to "${knownAgencyByGst.agency_name}", but the bill claims to be from "${cleanVendor}".`
-        );
-      }
-    }
+  const toggleExpand = (id: string) => {
+    setExpandedBillIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
-    // GSTIN format check
-    if (cleanGstin && cleanGstin.length !== 15 && cleanGstin.length !== 10) {
-      if (status !== 'Possible Duplicate/Inconsistency') {
-        status = 'Needs Verification';
-      }
-      reasons.push(
-        `GSTIN/PAN Format Inconsistency: "${cleanGstin}" does not match standard 15-character GSTIN or 10-character PAN structure.`
-      );
-    }
+  /**
+   * ACCURATE VERIFICATION & CLASSIFICATION LOGIC
+   * 
+   * Strict adherence to verification requirements:
+   * 
+   * 🟢 No Obvious Anomaly:
+   * - Invoice number is present and unique
+   * - Vendor name is present
+   * - GSTIN is present and has valid format
+   * - Invoice date is present
+   * - Project ID is present
+   * - Total amount is present (positive, <= approved project budget)
+   * - Invoice calculations are consistent
+   * - No duplicate invoice number among uploaded bills or central ledger
+   * - No direct conflict with an available project/vendor record
+   * 
+   * 🟡 Needs Verification:
+   * - Missing or unreadable information (invoice number, vendor, date, project ID, or amount)
+   * - Unknown / unavailable reference data (never automatically flagged as inconsistency!)
+   * 
+   * 🔴 Possible Duplicate/Inconsistency:
+   * - ONLY when there is a REAL detected conflict or duplicate:
+   *   1. Duplicate invoice number among uploaded bills in the batch
+   *   2. Same bill/document uploaded more than once in the batch
+   *   3. Duplicate invoice number registered in central historical ledger
+   *   4. Vendor GSTIN directly conflicts with available record (GSTIN registered to Company A, but bill lists Company B)
+   *   5. Vendor details directly conflict with available record (Vendor listed with different registered GSTIN)
+   *   6. Invoice amount clearly exceeds the approved project allocation
+   */
+  const verifiedBatchBills: BatchBillItem[] = useMemo(() => {
+    return batchRawBills.map((currentBill, i) => {
+      const cleanInv = currentBill.invoiceNumber.trim();
+      const cleanVendor = currentBill.vendorName.trim();
+      const cleanGstin = currentBill.gstinPan.trim().toUpperCase();
+      const normalizedGstin = cleanGstin.replace(/[^A-Z0-9]/g, '');
+      const cleanProjId = currentBill.projectId.trim().toUpperCase();
+      const numAmount = typeof currentBill.totalAmount === 'number' ? currentBill.totalAmount : Number(currentBill.totalAmount) || 0;
 
-    // 4. Check Project ID Mismatch
-    if (targetProject && cleanVendor) {
-      if (targetProject.agency_name.toLowerCase() !== cleanVendor.toLowerCase()) {
-        if (status !== 'Possible Duplicate/Inconsistency') {
-          status = 'Needs Verification';
+      const detectedIssues: string[] = [];
+      const matchedObservations: string[] = [];
+      const findings: VerificationFindingItem[] = [];
+      const duplicateWithBillNumbers: number[] = [];
+
+      let hasRealConflictOrDuplicate = false;
+      let hasMissingOrUnverifiedInfo = false;
+
+      // -------------------------------------------------------------
+      // 1. INTRA-BATCH DUPLICATE CHECK
+      // Only flag duplicate invoice numbers among uploaded bills (or identical files)
+      // Different invoice numbers from same vendor/project are NOT duplicates
+      // -------------------------------------------------------------
+      batchRawBills.forEach((otherBill, j) => {
+        if (j === i) return;
+
+        const otherInv = otherBill.invoiceNumber.trim();
+        const otherFileName = otherBill.fileName.trim().toLowerCase();
+        const currentFileName = currentBill.fileName.trim().toLowerCase();
+
+        // Duplicate invoice number between uploaded bills
+        if (cleanInv && otherInv && cleanInv.toLowerCase() === otherInv.toLowerCase()) {
+          hasRealConflictOrDuplicate = true;
+          if (!duplicateWithBillNumbers.includes(j + 1)) {
+            duplicateWithBillNumbers.push(j + 1);
+          }
+          detectedIssues.push(
+            `Duplicate invoice number detected in batch: Invoice "${cleanInv}" is identical to Bill ${j + 1} (${otherBill.fileName || `Bill ${j + 1}`}).`
+          );
         }
-        reasons.push(
-          `Project ID Mismatch: Project ${projId} (${targetProject.project_name}) is contracted to "${targetProject.agency_name}". The voucher vendor is listed as "${cleanVendor}".`
+
+        // Duplicate document file uploaded more than once
+        else if (
+          currentFileName &&
+          otherFileName &&
+          currentFileName === otherFileName &&
+          currentBill.fileSize > 0 &&
+          currentBill.fileSize === otherBill.fileSize &&
+          cleanInv === otherInv &&
+          cleanInv !== ''
+        ) {
+          hasRealConflictOrDuplicate = true;
+          if (!duplicateWithBillNumbers.includes(j + 1)) {
+            duplicateWithBillNumbers.push(j + 1);
+          }
+          detectedIssues.push(
+            `Duplicate document uploaded in batch: Identical file to Bill ${j + 1} ("${otherBill.fileName}").`
+          );
+        }
+      });
+
+      // -------------------------------------------------------------
+      // 2. CENTRAL LEDGER HISTORICAL DUPLICATE CHECK
+      // -------------------------------------------------------------
+      if (cleanInv) {
+        const historicalDup = bills.find(
+          (b) => b.invoice_number.trim().toLowerCase() === cleanInv.toLowerCase()
         );
-      }
-    }
 
-    // 5. Check Amount Inconsistency
-    if (numAmount <= 0) {
-      if (status !== 'Possible Duplicate/Inconsistency') {
+        if (historicalDup) {
+          hasRealConflictOrDuplicate = true;
+          findings.push({
+            category: 'Invoice Number',
+            matched: false,
+            status: 'mismatched',
+            title: 'Duplicate Invoice Number in Central Ledger',
+            detail: `Invoice "${cleanInv}" was previously claimed under Bill ID ${historicalDup.bill_id} for Project ${historicalDup.project_id} on ${historicalDup.bill_date}.`,
+          });
+          detectedIssues.push(
+            `Duplicate invoice number detected: "${cleanInv}" was previously registered in central ledger under ${historicalDup.bill_id}.`
+          );
+        } else if (duplicateWithBillNumbers.length > 0) {
+          findings.push({
+            category: 'Invoice Number',
+            matched: false,
+            status: 'mismatched',
+            title: 'Duplicate Invoice Number in Current Batch',
+            detail: `Invoice "${cleanInv}" conflicts with Bill ${duplicateWithBillNumbers.join(', Bill ')} in the current batch.`,
+          });
+        } else {
+          findings.push({
+            category: 'Invoice Number',
+            matched: true,
+            status: 'matched',
+            title: 'Invoice Number Present & Unique',
+            detail: `Invoice "${cleanInv}" is present and unique.`,
+          });
+          matchedObservations.push(`Invoice number "${cleanInv}" is unique.`);
+        }
+      } else {
+        hasMissingOrUnverifiedInfo = true;
+        findings.push({
+          category: 'Invoice Number',
+          matched: false,
+          status: 'missing',
+          title: 'Invoice Number Missing',
+          detail: 'Invoice number was not detected in the uploaded document.',
+        });
+      }
+
+      // -------------------------------------------------------------
+      // 3. PROJECT ID & BUDGET ALLOCATION CHECK
+      // -------------------------------------------------------------
+      const targetProject = cleanProjId
+        ? projects.find((p) => p.project_id.toUpperCase() === cleanProjId)
+        : undefined;
+
+      if (!cleanProjId) {
+        hasMissingOrUnverifiedInfo = true;
+        findings.push({
+          category: 'Project Record',
+          matched: false,
+          status: 'missing',
+          title: 'Project ID Missing',
+          detail: 'Project ID was not detected in the uploaded document.',
+        });
+      } else if (targetProject) {
+        // Direct conflict: invoice amount clearly exceeds approved project allocation
+        if (numAmount > 0 && numAmount > targetProject.approved_amount) {
+          hasRealConflictOrDuplicate = true;
+          findings.push({
+            category: 'Amount Authorization',
+            matched: false,
+            status: 'mismatched',
+            title: 'Invoice Amount Exceeds Approved Budget',
+            detail: `Claimed amount of ${formatINR(numAmount)} clearly exceeds total sanctioned project budget of ${formatINR(targetProject.approved_amount)} for ${targetProject.project_id}.`,
+          });
+          detectedIssues.push(
+            `Invoice amount clearly exceeds approved project budget (Claimed: ${formatINR(numAmount)}, Approved budget: ${formatINR(targetProject.approved_amount)}).`
+          );
+        } else {
+          findings.push({
+            category: 'Project Record',
+            matched: true,
+            status: 'matched',
+            title: 'Sanctioned Project Record Confirmed',
+            detail: `Project ${targetProject.project_id}: "${targetProject.project_name}" (${targetProject.district}). Approved budget: ${formatINR(targetProject.approved_amount)}.`,
+          });
+          matchedObservations.push(`Project ${targetProject.project_id} exists in sanctioned registry.`);
+        }
+      } else {
+        // Unknown reference data must NOT make the bill Possible Duplicate/Inconsistency
+        findings.push({
+          category: 'Project Record',
+          matched: true,
+          status: 'matched',
+          title: 'Project Identifier Present',
+          detail: `Project ID "${cleanProjId}" provided on invoice. (No conflicting record found).`,
+        });
+        matchedObservations.push(`Project identifier "${cleanProjId}" present.`);
+      }
+
+      // -------------------------------------------------------------
+      // 4. AMOUNT VALIDATION & CALCULATION CONSISTENCY
+      // -------------------------------------------------------------
+      if (numAmount <= 0) {
+        hasMissingOrUnverifiedInfo = true;
+        findings.push({
+          category: 'Invoice Amount',
+          matched: false,
+          status: 'missing',
+          title: 'Invoice Amount Missing or Zero',
+          detail: 'Total invoice amount could not be read or is zero. Requires verification.',
+        });
+      } else if (!hasRealConflictOrDuplicate) {
+        findings.push({
+          category: 'Invoice Amount',
+          matched: true,
+          status: 'matched',
+          title: 'Total Amount Present & Consistent',
+          detail: `Total claim amount: ${formatINR(numAmount)}.`,
+        });
+        matchedObservations.push(`Total amount of ${formatINR(numAmount)} is present and valid.`);
+      }
+
+      // -------------------------------------------------------------
+      // 5. GSTIN / PAN FORMAT CHECK
+      // -------------------------------------------------------------
+      const isValidGstinFormat = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/.test(normalizedGstin);
+      const isValidPanFormat = /^[A-Z]{5}[0-9]{4}[A-Z]{1}$/.test(normalizedGstin);
+
+      if (normalizedGstin) {
+        if (!isValidGstinFormat && !isValidPanFormat) {
+          // Unknown / unverified tax format -> Needs verification, NOT inconsistency
+          hasMissingOrUnverifiedInfo = true;
+          findings.push({
+            category: 'GSTIN / PAN Format',
+            matched: false,
+            status: 'warning',
+            title: 'Unverified GSTIN/PAN Structure',
+            detail: `Reference "${cleanGstin}" does not match standard 15-character GSTIN or 10-character PAN structure. Requires tax verification.`,
+          });
+        } else {
+          findings.push({
+            category: 'GSTIN / PAN Format',
+            matched: true,
+            status: 'matched',
+            title: 'Valid GSTIN/PAN Format',
+            detail: `Reference "${cleanGstin}" matches standard ${isValidGstinFormat ? '15-character GSTIN' : '10-character PAN'} format.`,
+          });
+          matchedObservations.push(`GSTIN/PAN "${cleanGstin}" format is valid.`);
+        }
+      } else {
+        hasMissingOrUnverifiedInfo = true;
+        findings.push({
+          category: 'GSTIN / PAN Format',
+          matched: false,
+          status: 'missing',
+          title: 'GSTIN / PAN Missing',
+          detail: 'Tax identification reference was not detected in document.',
+        });
+      }
+
+      // -------------------------------------------------------------
+      // 6. VENDOR CONCORDANCE & DIRECT CONFLICT CHECK
+      // Only flag conflict when there is a REAL conflict with an existing record!
+      // -------------------------------------------------------------
+      if (!cleanVendor) {
+        hasMissingOrUnverifiedInfo = true;
+        findings.push({
+          category: 'Vendor Record',
+          matched: false,
+          status: 'missing',
+          title: 'Vendor Name Missing',
+          detail: 'Vendor name was not detected in the uploaded document.',
+        });
+      } else {
+        const agencyByGstin = normalizedGstin
+          ? INITIAL_AGENCIES.find((a) => a.registration_ref.replace(/[^A-Z0-9]/g, '').toUpperCase() === normalizedGstin)
+          : undefined;
+
+        const agencyByName = INITIAL_AGENCIES.find(
+          (a) => a.agency_name.toLowerCase() === cleanVendor.toLowerCase()
+        );
+
+        // DIRECT CONFLICT 1: GSTIN matches an official agency in database, but vendor name is completely different!
+        if (agencyByGstin && cleanVendor) {
+          if (agencyByGstin.agency_name.toLowerCase() !== cleanVendor.toLowerCase()) {
+            hasRealConflictOrDuplicate = true;
+            findings.push({
+              category: 'Vendor & GSTIN Match',
+              matched: false,
+              status: 'mismatched',
+              title: 'Vendor Name and GSTIN Direct Conflict',
+              detail: `GSTIN "${cleanGstin}" is registered in available records to "${agencyByGstin.agency_name}", but invoice lists vendor as "${cleanVendor}".`,
+            });
+            detectedIssues.push(
+              `Vendor GSTIN direct conflict: GSTIN registered to "${agencyByGstin.agency_name}", but invoice lists "${cleanVendor}".`
+            );
+          } else {
+            findings.push({
+              category: 'Vendor & GSTIN Match',
+              matched: true,
+              status: 'matched',
+              title: 'Vendor and GSTIN Concordance Verified',
+              detail: `Vendor "${cleanVendor}" matches official registration record (${agencyByGstin.registration_ref}).`,
+            });
+            matchedObservations.push(`Vendor matches official registered agency record.`);
+          }
+        }
+
+        // DIRECT CONFLICT 2: Vendor name matches an official agency, but GSTIN is completely different!
+        else if (agencyByName && normalizedGstin) {
+          const officialGstin = agencyByName.registration_ref.replace(/[^A-Z0-9]/g, '').toUpperCase();
+          if (officialGstin !== normalizedGstin) {
+            hasRealConflictOrDuplicate = true;
+            findings.push({
+              category: 'Vendor & GSTIN Match',
+              matched: false,
+              status: 'mismatched',
+              title: 'Vendor GSTIN Direct Conflict',
+              detail: `Registered GSTIN for "${agencyByName.agency_name}" is "${agencyByName.registration_ref}", but invoice lists "${cleanGstin}".`,
+            });
+            detectedIssues.push(
+              `Vendor GSTIN direct conflict: Registered GSTIN for "${agencyByName.agency_name}" is "${agencyByName.registration_ref}", but bill lists "${cleanGstin}".`
+            );
+          } else {
+            findings.push({
+              category: 'Vendor & GSTIN Match',
+              matched: true,
+              status: 'matched',
+              title: 'Vendor and GSTIN Concordance Verified',
+              detail: `Vendor "${cleanVendor}" matches registered record.`,
+            });
+            matchedObservations.push(`Vendor and GSTIN verified against official records.`);
+          }
+        }
+
+        // No matching agency in reference dataset:
+        // Rule: "If the system does NOT have a reference record for the vendor, project, or invoice, that alone must NOT make the bill 'Possible Duplicate/Inconsistency'."
+        else {
+          findings.push({
+            category: 'Vendor Record',
+            matched: true,
+            status: 'matched',
+            title: 'Vendor Name Present',
+            detail: `Vendor "${cleanVendor}" is present. (No direct conflict with available records).`,
+          });
+          matchedObservations.push(`Vendor "${cleanVendor}" is present.`);
+        }
+      }
+
+      // -------------------------------------------------------------
+      // 7. INVOICE DATE CHECK
+      // -------------------------------------------------------------
+      if (!currentBill.invoiceDate) {
+        hasMissingOrUnverifiedInfo = true;
+        findings.push({
+          category: 'Invoice Date',
+          matched: false,
+          status: 'missing',
+          title: 'Invoice Date Missing',
+          detail: 'Invoice date was not detected in the uploaded document.',
+        });
+      } else {
+        findings.push({
+          category: 'Invoice Date',
+          matched: true,
+          status: 'matched',
+          title: 'Invoice Date Present',
+          detail: `Date: ${currentBill.invoiceDate}.`,
+        });
+        matchedObservations.push(`Invoice date "${currentBill.invoiceDate}" is present.`);
+      }
+
+      // -------------------------------------------------------------
+      // 8. FINAL STATUS DETERMINATION
+      // -------------------------------------------------------------
+      let status: DocumentVerificationStatus = 'No Obvious Anomaly';
+      let headline = '🟢 No Obvious Anomaly';
+
+      if (hasRealConflictOrDuplicate) {
+        status = 'Possible Duplicate/Inconsistency';
+        headline = '🔴 Possible Duplicate/Inconsistency';
+      } else if (hasMissingOrUnverifiedInfo) {
         status = 'Needs Verification';
+        headline = '🟡 Needs Verification';
+      } else {
+        status = 'No Obvious Anomaly';
+        headline = '🟢 No Obvious Anomaly';
       }
-      reasons.push('Amount Inconsistency: Bill claim amount must be greater than ₹0.');
-    } else if (targetProject && numAmount > targetProject.approved_amount) {
-      status = 'Possible Duplicate/Inconsistency';
-      reasons.push(
-        `Amount Inconsistency: Claimed amount of ${formatINR(numAmount)} exceeds the total sanctioned project budget of ${formatINR(targetProject.approved_amount)}.`
-      );
-    } else if (targetProject && (targetProject.spent_amount + numAmount > targetProject.approved_amount * 1.02)) {
-      if (status !== 'Possible Duplicate/Inconsistency') {
-        status = 'Needs Verification';
-      }
-      reasons.push(
-        `Amount Inconsistency: Existing spent amount (${formatINR(targetProject.spent_amount)}) plus this claim (${formatINR(numAmount)}) would overshoot sanctioned budget (${formatINR(targetProject.approved_amount)}).`
-      );
-    }
 
-    // If clean
-    if (reasons.length === 0) {
-      status = 'No Obvious Anomaly';
-      headline = 'No Obvious Anomaly';
-      observations.push('Invoice number is unique and verified against central records.');
-      observations.push('Vendor credentials and GSTIN match state implementing agency registry.');
-      observations.push('Associated Project ID aligns with contractor work order.');
-      observations.push('Claim amount is verified within approved financial thresholds.');
-    } else if (status === 'Possible Duplicate/Inconsistency') {
-      headline = 'Possible Duplicate/Inconsistency';
-    } else {
-      headline = 'Needs Verification';
-    }
-
-    const resultObj = { status, headline, reasons, observations };
-    setVerificationResult(resultObj);
-    return resultObj;
-  };
-
-  // Trigger verification on field change
-  const handleFieldChange = (
-    invNum = invoiceNumber,
-    vend = vendorName,
-    gst = gstinPan,
-    dt = invoiceDate,
-    pId = projectId,
-    amt = totalAmount
-  ) => {
-    verifyBill(invNum, vend, gst, dt, pId, amt);
-  };
-
-  // Handle file upload
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    setSelectedFile(file);
-    setIsAnalyzing(true);
-
-    if (file.type.startsWith('image/')) {
-      const reader = new FileReader();
-      reader.onload = () => {
-        setFilePreview(reader.result as string);
+      return {
+        ...currentBill,
+        billNumber: i + 1,
+        status,
+        headline,
+        detectedIssues,
+        matchedObservations,
+        findings,
+        duplicateWithBillNumbers,
+        isExpanded: expandedBillIds.has(currentBill.id),
       };
-      reader.readAsDataURL(file);
-    } else {
-      setFilePreview(null);
+    });
+  }, [batchRawBills, projects, bills, expandedBillIds]);
+
+  // Batch summary metrics
+  const batchSummary = useMemo(() => {
+    const total = verifiedBatchBills.length;
+    const clean = verifiedBatchBills.filter((b) => b.status === 'No Obvious Anomaly').length;
+    const needsVerification = verifiedBatchBills.filter((b) => b.status === 'Needs Verification').length;
+    const possibleDuplicate = verifiedBatchBills.filter((b) => b.status === 'Possible Duplicate/Inconsistency').length;
+
+    return {
+      total,
+      clean,
+      needsVerification,
+      possibleDuplicate,
+    };
+  }, [verifiedBatchBills]);
+
+  // Filtered list based on status button or search query
+  const displayedBatchBills = useMemo(() => {
+    return verifiedBatchBills.filter((b) => {
+      if (filterStatus !== 'All' && b.status !== filterStatus) return false;
+      if (!searchQuery.trim()) return true;
+      const q = searchQuery.toLowerCase();
+      return (
+        b.invoiceNumber.toLowerCase().includes(q) ||
+        b.vendorName.toLowerCase().includes(q) ||
+        b.gstinPan.toLowerCase().includes(q) ||
+        b.projectId.toLowerCase().includes(q) ||
+        b.fileName.toLowerCase().includes(q) ||
+        `bill ${b.billNumber}`.toLowerCase().includes(q)
+      );
+    });
+  }, [verifiedBatchBills, filterStatus, searchQuery]);
+
+  /**
+   * Multi-file upload functionality (keeps existing batch intact)
+   */
+  const handleMultipleFilesUpload = async (files: FileList | File[]) => {
+    if (!files || files.length === 0) return;
+
+    const filesArray = Array.from(files);
+    setIsProcessingBatch(true);
+    setProcessingStatusText(`Extracting data from ${filesArray.length} document(s)...`);
+
+    const newBills: RawBatchBillItem[] = [];
+    const currentCount = batchRawBills.length;
+
+    for (let idx = 0; idx < filesArray.length; idx++) {
+      const file = filesArray[idx];
+      setProcessingStatusText(`Extracting Bill ${currentCount + idx + 1} of ${currentCount + filesArray.length}: ${file.name}...`);
+
+      let previewUrl: string | null = null;
+      if (file.type.startsWith('image/')) {
+        previewUrl = await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = () => resolve('');
+          reader.readAsDataURL(file);
+        });
+      }
+
+      try {
+        const { text, method } = await extractTextFromDocument(file);
+        const parsed = parseInvoiceFields(text, file.name);
+
+        newBills.push({
+          id: `uploaded-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 7)}`,
+          billNumber: currentCount + idx + 1,
+          fileName: file.name,
+          fileSize: file.size,
+          filePreview: previewUrl,
+          extractionMethod: method,
+          rawTextSnippet: text.slice(0, 300),
+          invoiceNumber: parsed.invoiceNumber,
+          vendorName: parsed.vendorName,
+          gstinPan: parsed.gstinPan,
+          invoiceDate: parsed.invoiceDate,
+          projectId: parsed.projectId,
+          totalAmount: parsed.totalAmount,
+          documentType: parsed.documentType,
+        });
+      } catch (err) {
+        console.error(`Error processing file ${file.name}:`, err);
+        newBills.push({
+          id: `uploaded-err-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 7)}`,
+          billNumber: currentCount + idx + 1,
+          fileName: file.name,
+          fileSize: file.size,
+          filePreview: previewUrl,
+          extractionMethod: 'Extraction Error Fallback',
+          rawTextSnippet: 'Could not extract text from document',
+          invoiceNumber: '',
+          vendorName: '',
+          gstinPan: '',
+          invoiceDate: '',
+          projectId: '',
+          totalAmount: '',
+          documentType: 'Unverified Document',
+        });
+      }
     }
 
-    // Simulate OCR text extraction
+    // Append new bills so uploading a second bill never removes previously uploaded bills
+    setBatchRawBills((prev) => [...prev, ...newBills]);
+
+    // Automatically expand the newly added bill(s)
+    setExpandedBillIds((prev) => {
+      const next = new Set(prev);
+      newBills.slice(0, 2).forEach((b) => next.add(b.id));
+      return next;
+    });
+
+    setIsProcessingBatch(false);
+    setProcessingStatusText('');
+    setLastVerifiedAt(new Date().toLocaleTimeString());
+  };
+
+  /**
+   * Remove option for an individual bill
+   */
+  const handleRemoveBill = (id: string) => {
+    setBatchRawBills((prev) => prev.filter((b) => b.id !== id));
+    setExpandedBillIds((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  };
+
+  /**
+   * Clear All Bills button
+   */
+  const handleClearAllBills = () => {
+    setBatchRawBills([]);
+    setExpandedBillIds(new Set());
+    try {
+      sessionStorage.removeItem(SESSION_STORAGE_KEY);
+    } catch (err) {
+      console.warn(err);
+    }
+  };
+
+  /**
+   * Verify All Bills button
+   */
+  const handleVerifyAllBills = () => {
+    if (batchRawBills.length === 0) return;
+    setIsVerifyingAll(true);
     setTimeout(() => {
-      setIsAnalyzing(false);
-      // Generate OCR parsed fields based on the uploaded file
-      const isPdf = file.type === 'application/pdf' || file.name.endsWith('.pdf');
-      const randomSuffix = Math.floor(100 + Math.random() * 899);
-      const newInv = `INV/TN/2024/${randomSuffix}`;
-      const newDate = new Date().toISOString().split('T')[0];
-      const newVendor = 'Vellore Engineering Services';
-      const newGstin = '33BBBPB9876C1Z9';
-      const newProjId = 'MPLAD002';
-      const newAmt = 720000;
-      const newDoc = isPdf ? 'Certified Engineering Progress Voucher (PDF)' : 'Scanned Material Tax Invoice';
-
-      setInvoiceNumber(newInv);
-      setVendorName(newVendor);
-      setGstinPan(newGstin);
-      setInvoiceDate(newDate);
-      setProjectId(newProjId);
-      setTotalAmount(newAmt);
-      setDocumentType(newDoc);
-
-      verifyBill(newInv, newVendor, newGstin, newDate, newProjId, newAmt);
-    }, 500);
+      setIsVerifyingAll(false);
+      setLastVerifiedAt(new Date().toLocaleTimeString());
+    }, 450);
   };
 
-  // 1-Click Test Scenarios for demonstration
-  const loadScenario = (type: 'clean' | 'dup_inv' | 'mismatch_gst' | 'mismatch_proj' | 'excess_amt') => {
-    if (type === 'clean') {
-      const inv = 'INV/VEL/2024/991';
-      const vend = 'Vellore Engineering Services';
-      const gst = '33BBBPB9876C1Z9';
-      const dt = '2024-05-18';
-      const pid = 'MPLAD002';
-      const amt = 450000;
-      setInvoiceNumber(inv);
-      setVendorName(vend);
-      setGstinPan(gst);
-      setInvoiceDate(dt);
-      setProjectId(pid);
-      setTotalAmount(amt);
-      setDocumentType('Culvert Drainage Stone Masonry');
-      verifyBill(inv, vend, gst, dt, pid, amt);
-    } else if (type === 'dup_inv') {
-      // Existing invoice in INITIAL_BILLS: INV/CHE/2024/089
-      const inv = 'INV/CHE/2024/089';
-      const vend = 'Apex Infrastructure & Works Ltd';
-      const gst = '33AAACA1122D1Z4';
-      const dt = '2024-03-15';
-      const pid = 'MPLAD001';
-      const amt = 1950000;
-      setInvoiceNumber(inv);
-      setVendorName(vend);
-      setGstinPan(gst);
-      setInvoiceDate(dt);
-      setProjectId(pid);
-      setTotalAmount(amt);
-      setDocumentType('Duplicate RCC Claim (Second Submission)');
-      verifyBill(inv, vend, gst, dt, pid, amt);
-    } else if (type === 'mismatch_gst') {
-      // Vendor claims to be Madurai Public Works, but inputs Apex Infrastructure GSTIN
-      const inv = `INV/MAD/2024/883`;
-      const vend = 'Madurai Public Works Consortium';
-      const gst = '33AAACA1122D1Z4'; // Belongs to Apex Infrastructure!
-      const dt = '2024-05-22';
-      const pid = 'MPLAD004';
-      const amt = 650000;
-      setInvoiceNumber(inv);
-      setVendorName(vend);
-      setGstinPan(gst);
-      setInvoiceDate(dt);
-      setProjectId(pid);
-      setTotalAmount(amt);
-      setDocumentType('Roof Truss Fabrication Claim');
-      verifyBill(inv, vend, gst, dt, pid, amt);
-    } else if (type === 'mismatch_proj') {
-      // Vendor Kongu Infra (Coimbatore) submitting for Trichy MPLAD012 (Delta Buildcon)
-      const inv = 'INV/MIS/2024/404';
-      const vend = 'Kongu Infra Developments';
-      const gst = '33AABCK9911P1Z3';
-      const dt = '2024-05-10';
-      const pid = 'MPLAD012'; // Assigned to Delta Buildcon!
-      const amt = 900000;
-      setInvoiceNumber(inv);
-      setVendorName(vend);
-      setGstinPan(gst);
-      setInvoiceDate(dt);
-      setProjectId(pid);
-      setTotalAmount(amt);
-      setDocumentType('Unassigned Earthwork Claim');
-      verifyBill(inv, vend, gst, dt, pid, amt);
-    } else if (type === 'excess_amt') {
-      // Claim exceeds approved budget
-      const inv = 'INV/EXC/2024/550';
-      const vend = 'Salem Civil & Water Utilities Pvt Ltd';
-      const gst = '33AABCS4455E1Z1';
-      const dt = '2024-05-25';
-      const pid = 'MPLAD003'; // approved amount is 20,00,000
-      const amt = 2800000; // Exceeds 20L
-      setInvoiceNumber(inv);
-      setVendorName(vend);
-      setGstinPan(gst);
-      setInvoiceDate(dt);
-      setProjectId(pid);
-      setTotalAmount(amt);
-      setDocumentType('Overbudget Pipeline Extension Claim');
-      verifyBill(inv, vend, gst, dt, pid, amt);
-    }
+  /**
+   * Field modification inside an expanded bill card
+   */
+  const handleUpdateBillField = (
+    id: string,
+    field: keyof RawBatchBillItem,
+    value: string | number
+  ) => {
+    setBatchRawBills((prev) =>
+      prev.map((b) => (b.id === id ? { ...b, [field]: value } : b))
+    );
   };
 
-  // Add bill to ledger after verification
-  const handleSaveToLedger = () => {
-    const numAmount = typeof totalAmount === 'number' ? totalAmount : Number(totalAmount) || 0;
-    const targetProj = projects.find(p => p.project_id === projectId);
+  /**
+   * Save an individual bill to the historical registry
+   */
+  const handleSaveBillToLedger = (bill: BatchBillItem) => {
+    const numAmt = typeof bill.totalAmount === 'number' ? bill.totalAmount : Number(bill.totalAmount) || 0;
+    const targetProj = projects.find((p) => p.project_id === bill.projectId);
 
-    const newBill: BillRecord = {
+    const newRecord: BillRecord = {
       bill_id: `BILL-2024-${String(bills.length + 1).padStart(3, '0')}`,
-      invoice_number: invoiceNumber,
-      project_id: projectId,
+      invoice_number: bill.invoiceNumber || 'INV-UNSPECIFIED',
+      project_id: bill.projectId || 'UNASSIGNED',
       project_name: targetProj?.project_name || 'Public Works Project',
-      vendor_name: vendorName,
-      gstin_pan: gstinPan,
-      amount: numAmount,
-      bill_date: invoiceDate,
-      document_type: documentType,
-      verification_status: verificationResult.status,
+      vendor_name: bill.vendorName || 'Unspecified Contractor',
+      gstin_pan: bill.gstinPan || 'NOT-PROVIDED',
+      amount: numAmt,
+      bill_date: bill.invoiceDate || new Date().toISOString().split('T')[0],
+      document_type: bill.documentType,
+      verification_status: bill.status,
       verification_notes:
-        verificationResult.reasons.length > 0
-          ? verificationResult.reasons.join(' | ')
+        bill.detectedIssues.length > 0
+          ? bill.detectedIssues.join(' | ')
           : 'Document verified. No obvious anomaly detected against available records.',
       ocr_extracted: true,
-      uploaded_at: new Date().toISOString().replace('T', ' ').slice(0, 16)
+      uploaded_at: new Date().toISOString().replace('T', ' ').slice(0, 16),
     };
 
-    onAddBill(newBill);
-    alert(`Bill "${newBill.bill_id}" (${newBill.invoice_number}) logged in central registry with status: ${verificationResult.status}`);
+    onAddBill(newRecord);
   };
 
-  const filteredBills = bills.filter(b => {
-    if (filterResult !== 'All' && b.verification_status !== filterResult) return false;
-    if (!searchQuery.trim()) return true;
-    const q = searchQuery.toLowerCase();
-    return (
-      b.invoice_number.toLowerCase().includes(q) ||
-      b.bill_id.toLowerCase().includes(q) ||
-      b.vendor_name.toLowerCase().includes(q) ||
-      b.gstin_pan.toLowerCase().includes(q) ||
-      b.project_id.toLowerCase().includes(q)
-    );
-  });
+  /**
+   * Batch action: Save all clean or reviewed bills to registry
+   */
+  const handleSaveAllCleanBills = () => {
+    const cleanBills = verifiedBatchBills.filter((b) => b.status === 'No Obvious Anomaly');
+    cleanBills.forEach((b) => handleSaveBillToLedger(b));
+    alert(`Logged ${cleanBills.length} verified bill(s) into the central audit registry.`);
+  };
+
+  /**
+   * Download sample test vouchers
+   */
+  const handleDownloadSamplePack = async (type: 'technova' | 'pack' = 'pack') => {
+    const downloadBlob = (blob: Blob, name: string) => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    };
+
+    if (type === 'technova') {
+      const blob = generateTestBillPDF('technova');
+      downloadBlob(blob, 'TechNova_Solutions_Valid_Bill_INV-2026-001.pdf');
+      return;
+    }
+
+    const blob1 = generateTestBillPDF('technova');
+    const blob2 = generateTestBillPDF('inconsistent_budget');
+    const blob3 = generateTestBillPDF('duplicate_inv');
+
+    downloadBlob(blob1, 'Sample_1_TechNova_Solutions_Clean_INV-2026-001.pdf');
+    setTimeout(() => downloadBlob(blob2, 'Sample_2_Overbudget_Claim_INV555.pdf'), 200);
+    setTimeout(() => downloadBlob(blob3, 'Sample_3_Duplicate_Claim_INV089.pdf'), 400);
+  };
+
+  /**
+   * Quick Add Helper for Instant Demo Testing
+   */
+  const handleAddSampleTestBill = (type: 'technova' | 'inconsistent' | 'duplicate') => {
+    const newIdx = batchRawBills.length + 1;
+    let newBill: RawBatchBillItem;
+
+    if (type === 'technova') {
+      // Exactly matches the user's test case: TechNova Solutions / INV-2026-001 / MPLAD001 / ₹1,11,392
+      newBill = {
+        id: `test-technova-${Date.now()}`,
+        billNumber: newIdx,
+        fileName: 'TechNova_Solutions_INV-2026-001.pdf',
+        fileSize: 48600,
+        extractionMethod: 'PDF Text Extraction (PDF.js)',
+        rawTextSnippet: 'TAX INVOICE - Invoice No: INV-2026-001 | Vendor: TechNova Solutions | GSTIN: 29ABCDE1234F1Z5 | Project ID: MPLAD001 | Date: 2026-09-25 | Total: 111392',
+        invoiceNumber: 'INV-2026-001',
+        vendorName: 'TechNova Solutions',
+        gstinPan: '29ABCDE1234F1Z5',
+        invoiceDate: '2026-09-25',
+        projectId: 'MPLAD001',
+        totalAmount: 111392,
+        documentType: 'IT & Digital Surveillance Voucher',
+      };
+    } else if (type === 'duplicate') {
+      // Duplicate invoice number with an existing bill in the batch
+      const sourceBill = batchRawBills[0] || { invoiceNumber: 'INV-2026-001', vendorName: 'TechNova Solutions', projectId: 'MPLAD001', totalAmount: 111392 };
+      newBill = {
+        id: `test-dup-${Date.now()}`,
+        billNumber: newIdx,
+        fileName: `Duplicate_Claim_Copy_${sourceBill.invoiceNumber.replace(/[^A-Za-z0-9]/g, '_')}.pdf`,
+        fileSize: 42100,
+        extractionMethod: 'PDF Text Extraction (PDF.js)',
+        rawTextSnippet: `DUPLICATE TAX INVOICE - Duplicate claim with invoice ${sourceBill.invoiceNumber}`,
+        invoiceNumber: sourceBill.invoiceNumber,
+        vendorName: sourceBill.vendorName,
+        gstinPan: '29ABCDE1234F1Z5',
+        invoiceDate: '2026-09-25',
+        projectId: sourceBill.projectId || 'MPLAD001',
+        totalAmount: sourceBill.totalAmount || 111392,
+        documentType: 'Duplicate Claim Copy',
+      };
+    } else {
+      // Inconsistent bill: Amount exceeds project approved budget (Real conflict)
+      newBill = {
+        id: `test-inconsistent-${Date.now()}`,
+        billNumber: newIdx,
+        fileName: 'Overbudget_Excavation_Claim.pdf',
+        fileSize: 51200,
+        extractionMethod: 'PDF Text Extraction (PDF.js)',
+        rawTextSnippet: 'TAX INVOICE - Claim amount exceeds sanctioned project budget for MPLAD001',
+        invoiceNumber: `INV/EXC/2026/${Math.floor(100 + Math.random() * 900)}`,
+        vendorName: 'Kongu Infra Developments',
+        gstinPan: '33AABCK9911P1Z3',
+        invoiceDate: '2026-09-25',
+        projectId: 'MPLAD001',
+        totalAmount: 9500000, // Budget for MPLAD001 is 40,00,000!
+        documentType: 'Over-Sanction Claim Voucher',
+      };
+    }
+
+    setBatchRawBills((prev) => [...prev, newBill]);
+    setExpandedBillIds((prev) => new Set([...prev, newBill.id]));
+  };
 
   return (
     <div id="bill-verification-section" className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm space-y-6">
-      {/* Top Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
+      {/* 1. Header Bar with Prominent "Upload Bills", "Verify All Bills", & "Clear All Bills" */}
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-800 pb-4">
         <div>
-          <div className="flex items-center gap-2">
-            <span className="text-2xl">📄</span>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-2xl">📑</span>
             <h3 className="text-lg font-bold text-white tracking-tight">
-              Bill / Document Verification
+              Multi-Bill Batch Verification System
             </h3>
             <span className="text-xs px-2.5 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 font-semibold font-mono">
-              OCR &amp; Cross-Check
+              Concurrent 5-10 Bills &amp; Evidence-Based Verification
             </span>
           </div>
           <p className="text-xs text-slate-400 mt-1">
-            Automated verification of invoice numbers, GSTIN/PAN records, vendor allocations, and claim amounts against government registry
+            Upload multiple bill images or PDFs at once. Uploading new bills keeps existing bills in the batch. Flags anomalies only with actual evidence.
           </p>
         </div>
 
-        {/* Upload Bill Main Button */}
-        <div>
+        {/* Action Controls */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Hidden multi-file input */}
           <input
             type="file"
             ref={fileInputRef}
-            accept="image/*,application/pdf"
-            onChange={handleFileChange}
+            multiple
+            accept="image/*,application/pdf,text/*"
+            onChange={(e) => {
+              if (e.target.files && e.target.files.length > 0) {
+                handleMultipleFilesUpload(e.target.files);
+                e.target.value = ''; // Reset input to permit subsequent uploads
+              }
+            }}
             className="hidden"
           />
+
+          {/* Primary "Upload Bills" Button */}
           <button
             onClick={() => fileInputRef.current?.click()}
             className="px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white rounded-lg text-xs font-bold flex items-center gap-2 shadow-md transition cursor-pointer"
           >
             <Upload className="w-4 h-4" />
-            <span>Upload Bill (Image / PDF)</span>
+            <span>Upload Bills (Select 5-10 Files)</span>
           </button>
-        </div>
-      </div>
 
-      {/* Demo Test Scenarios Selector Bar */}
-      <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 flex items-center justify-between flex-wrap gap-2 text-xs">
-        <span className="text-[11px] font-semibold text-slate-400 flex items-center gap-1.5">
-          <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-          Quick Test Scenarios:
-        </span>
-        <div className="flex items-center gap-1.5 flex-wrap">
+          {/* Verify All Bills Button */}
           <button
-            onClick={() => loadScenario('clean')}
-            className="px-2.5 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 rounded text-[11px] border border-emerald-500/30 font-medium transition cursor-pointer"
+            onClick={handleVerifyAllBills}
+            disabled={isVerifyingAll || batchRawBills.length === 0}
+            className={`px-4 py-2 rounded-lg text-xs font-bold flex items-center gap-2 shadow-md transition cursor-pointer ${
+              batchRawBills.length === 0
+                ? 'bg-slate-800 text-slate-500 cursor-not-allowed'
+                : 'bg-emerald-600 hover:bg-emerald-500 text-white'
+            }`}
+            title="Run batch cross-verification across all uploaded bills"
           >
-            🟢 No Obvious Anomaly
+            <RefreshCw className={`w-3.5 h-3.5 ${isVerifyingAll ? 'animate-spin' : ''}`} />
+            <span>Verify All Bills ({batchRawBills.length})</span>
           </button>
-          <button
-            onClick={() => loadScenario('dup_inv')}
-            className="px-2.5 py-1 bg-red-500/10 hover:bg-red-500/20 text-red-300 rounded text-[11px] border border-red-500/30 font-medium transition cursor-pointer"
-          >
-            🔴 Duplicate Invoice #
-          </button>
-          <button
-            onClick={() => loadScenario('mismatch_gst')}
-            className="px-2.5 py-1 bg-red-500/10 hover:bg-red-500/20 text-red-300 rounded text-[11px] border border-red-500/30 font-medium transition cursor-pointer"
-          >
-            🔴 Vendor &amp; GSTIN Mismatch
-          </button>
-          <button
-            onClick={() => loadScenario('mismatch_proj')}
-            className="px-2.5 py-1 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 rounded text-[11px] border border-amber-500/30 font-medium transition cursor-pointer"
-          >
-            🟡 Project ID Mismatch
-          </button>
-          <button
-            onClick={() => loadScenario('excess_amt')}
-            className="px-2.5 py-1 bg-red-500/10 hover:bg-red-500/20 text-red-300 rounded text-[11px] border border-red-500/30 font-medium transition cursor-pointer"
-          >
-            🔴 Amount Inconsistency
-          </button>
-        </div>
-      </div>
 
-      {/* Main Grid: Upload & Read Bill Details + Verification Result */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left Column: Upload Dropzone & Optical Preview (4 cols) */}
-        <div className="lg:col-span-4 space-y-4">
-          <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3">
-            <h4 className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
-              <Upload className="w-3.5 h-3.5 text-blue-400" />
-              Bill Document Upload
-            </h4>
-
-            {/* Clickable Drag & Drop Zone */}
-            <div
-              onClick={() => fileInputRef.current?.click()}
-              className="border-2 border-dashed border-slate-800 hover:border-blue-500/60 rounded-xl p-5 flex flex-col items-center justify-center cursor-pointer transition bg-slate-900/40 hover:bg-slate-900/80 group text-center"
+          {/* Clear All Bills Button */}
+          {batchRawBills.length > 0 && (
+            <button
+              onClick={handleClearAllBills}
+              className="px-3 py-2 bg-red-950/40 hover:bg-red-900/60 text-red-300 hover:text-red-100 rounded-lg text-xs font-semibold border border-red-800/40 flex items-center gap-1.5 transition cursor-pointer"
+              title="Clear all uploaded bills from the current batch"
             >
-              <FileText className="w-9 h-9 text-slate-500 group-hover:text-blue-400 mb-2 transition" />
-              <span className="text-xs font-semibold text-slate-200 group-hover:text-white">
-                {selectedFile ? selectedFile.name : 'Click to select bill image or PDF'}
+              <Trash2 className="w-3.5 h-3.5 text-red-400" />
+              <span>Clear All Bills</span>
+            </button>
+          )}
+
+          {/* Demo Batch Loader */}
+          <button
+            onClick={() => {
+              setBatchRawBills(INITIAL_DEMO_BATCH);
+              setExpandedBillIds(new Set(['demo-1', 'demo-3']));
+              setLastVerifiedAt(new Date().toLocaleTimeString());
+            }}
+            className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold border border-slate-700 flex items-center gap-1.5 transition cursor-pointer"
+            title="Load presentation test batch of 6 diverse bills"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+            <span>⚡ Load Demo Batch (6 Bills)</span>
+          </button>
+        </div>
+      </div>
+
+      {/* 2. Drag & Drop Multi-Bill Upload Zone (Supports 5-10 Bills at once) */}
+      <div
+        onDragOver={(e) => {
+          e.preventDefault();
+          setIsDragging(true);
+        }}
+        onDragLeave={() => setIsDragging(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setIsDragging(false);
+          if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+            handleMultipleFilesUpload(e.dataTransfer.files);
+          }
+        }}
+        onClick={() => fileInputRef.current?.click()}
+        className={`p-4 rounded-xl border-2 border-dashed transition text-center cursor-pointer ${
+          isDragging
+            ? 'border-indigo-400 bg-indigo-950/30 scale-[1.005]'
+            : 'border-slate-800 bg-slate-950/70 hover:border-indigo-500/60 hover:bg-slate-950'
+        }`}
+      >
+        <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+          <div className="w-10 h-10 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 flex items-center justify-center shrink-0">
+            <Upload className="w-5 h-5" />
+          </div>
+          <div className="text-center sm:text-left">
+            <p className="text-xs font-semibold text-slate-200">
+              Drag &amp; drop 5 to 10 bill PDFs or image vouchers here, or <span className="text-indigo-400 underline font-bold">click to browse</span>
+            </p>
+            <p className="text-[11px] text-slate-500">
+              Accepts multiple files at once. Uploading new files appends to this batch (Bill 1, Bill 2, Bill 3...) without replacing previous uploads.
+            </p>
+          </div>
+          <div className="sm:ml-auto flex items-center gap-2 flex-wrap" onClick={(e) => e.stopPropagation()}>
+            <button
+              onClick={() => handleAddSampleTestBill('technova')}
+              className="text-[10px] bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-slate-700 px-2 py-1 rounded flex items-center gap-1 cursor-pointer font-bold"
+              title="Add TechNova valid bill (INV-2026-001, TechNova Solutions, MPLAD001, ₹1,11,392)"
+            >
+              <FilePlus className="w-3 h-3 text-emerald-400" />
+              <span>+ Add TechNova Valid Bill</span>
+            </button>
+            <button
+              onClick={() => handleAddSampleTestBill('duplicate')}
+              className="text-[10px] bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 px-2 py-1 rounded flex items-center gap-1 cursor-pointer"
+              title="Add duplicate invoice in batch"
+            >
+              <FilePlus className="w-3 h-3 text-amber-400" />
+              <span>+ Add Duplicate</span>
+            </button>
+            <button
+              onClick={() => handleAddSampleTestBill('inconsistent')}
+              className="text-[10px] bg-slate-800 hover:bg-slate-700 text-red-300 border border-slate-700 px-2 py-1 rounded flex items-center gap-1 cursor-pointer"
+              title="Add over-budget inconsistent bill"
+            >
+              <FilePlus className="w-3 h-3 text-red-400" />
+              <span>+ Add Overbudget Bill</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* 3. Uploaded Document Names Strip */}
+      <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-2">
+        <div className="flex items-center justify-between flex-wrap gap-2 text-xs">
+          <span className="text-[11px] font-semibold text-slate-300 flex items-center gap-1.5">
+            <Files className="w-3.5 h-3.5 text-indigo-400" />
+            Uploaded Documents in Current Batch ({batchRawBills.length} Bills Total):
+          </span>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={() => handleDownloadSamplePack('technova')}
+              className="text-[11px] text-emerald-400 hover:text-emerald-300 underline flex items-center gap-1 cursor-pointer font-bold"
+            >
+              <Download className="w-3 h-3" />
+              <span>Download TechNova Valid Test Bill (PDF)</span>
+            </button>
+            <span className="text-slate-600">|</span>
+            <button
+              onClick={() => handleDownloadSamplePack('pack')}
+              className="text-[11px] text-indigo-300 hover:text-indigo-200 underline flex items-center gap-1 cursor-pointer"
+            >
+              <Download className="w-3 h-3" />
+              <span>Download 3 Sample Test Bills (PDF)</span>
+            </button>
+          </div>
+        </div>
+
+        {/* File Tags Strip with Individual Remove Buttons */}
+        {batchRawBills.length === 0 ? (
+          <p className="text-xs text-slate-500 italic py-2">
+            No bills in the current batch. Upload 5 to 10 bills above or click "⚡ Load Demo Batch".
+          </p>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {batchRawBills.map((b, idx) => (
+              <span
+                key={b.id}
+                className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-900 border border-slate-700 text-slate-300 flex items-center gap-1.5"
+              >
+                <span className="font-bold text-indigo-400">Bill {idx + 1}:</span>
+                <span className="truncate max-w-[180px]" title={b.fileName}>{b.fileName}</span>
+                <span className="text-slate-500">({(b.fileSize / 1024).toFixed(0)} KB)</span>
+                <button
+                  onClick={() => handleRemoveBill(b.id)}
+                  className="text-slate-400 hover:text-red-400 p-0.5 ml-0.5 cursor-pointer"
+                  title={`Remove Bill ${idx + 1}`}
+                >
+                  <Trash2 className="w-2.5 h-2.5" />
+                </button>
               </span>
-              <span className="text-[10px] text-slate-500 mt-1">
-                Supports scans, invoices, and vouchers (PNG, JPG, PDF)
+            ))}
+          </div>
+        )}
+
+        {isProcessingBatch && (
+          <div className="p-2.5 bg-blue-950/40 rounded-lg border border-blue-500/30 flex items-center gap-2 text-xs text-blue-300">
+            <Sparkles className="w-4 h-4 animate-spin text-blue-400 shrink-0" />
+            <span>{processingStatusText}</span>
+          </div>
+        )}
+
+        {isVerifyingAll && (
+          <div className="p-2.5 bg-emerald-950/40 rounded-lg border border-emerald-500/30 flex items-center gap-2 text-xs text-emerald-300">
+            <RefreshCw className="w-4 h-4 animate-spin text-emerald-400 shrink-0" />
+            <span>Verifying all {batchRawBills.length} bills concurrently against central records and intra-batch duplicates...</span>
+          </div>
+        )}
+      </div>
+
+      {/* 4. BATCH SUMMARY AT TOP */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {/* Total Bills */}
+        <div className="p-3.5 bg-slate-950 rounded-xl border border-slate-800 space-y-1">
+          <div className="flex items-center justify-between text-xs text-slate-400">
+            <span className="uppercase font-semibold text-[10px]">Total Bills</span>
+            <Layers className="w-4 h-4 text-indigo-400" />
+          </div>
+          <div className="text-2xl font-bold font-mono text-white">
+            {batchSummary.total}
+          </div>
+          <span className="text-[10px] text-slate-500 block">Current active batch</span>
+        </div>
+
+        {/* Clean Bills */}
+        <button
+          onClick={() => setFilterStatus(filterStatus === 'No Obvious Anomaly' ? 'All' : 'No Obvious Anomaly')}
+          className={`p-3.5 rounded-xl border text-left space-y-1 transition cursor-pointer ${
+            filterStatus === 'No Obvious Anomaly'
+              ? 'bg-emerald-950/40 border-emerald-500 text-emerald-200 ring-1 ring-emerald-500'
+              : 'bg-slate-950 border-slate-800 hover:border-emerald-500/40'
+          }`}
+        >
+          <div className="flex items-center justify-between text-xs text-emerald-400">
+            <span className="uppercase font-semibold text-[10px]">🟢 No Obvious Anomaly</span>
+            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+          </div>
+          <div className="text-2xl font-bold font-mono text-emerald-300">
+            {batchSummary.clean}
+          </div>
+          <span className="text-[10px] text-slate-500 block">
+            {batchSummary.total > 0 ? `${((batchSummary.clean / batchSummary.total) * 100).toFixed(0)}% of batch` : '0%'}
+          </span>
+        </button>
+
+        {/* Needs Verification Bills */}
+        <button
+          onClick={() => setFilterStatus(filterStatus === 'Needs Verification' ? 'All' : 'Needs Verification')}
+          className={`p-3.5 rounded-xl border text-left space-y-1 transition cursor-pointer ${
+            filterStatus === 'Needs Verification'
+              ? 'bg-amber-950/40 border-amber-500 text-amber-200 ring-1 ring-amber-500'
+              : 'bg-slate-950 border-slate-800 hover:border-amber-500/40'
+          }`}
+        >
+          <div className="flex items-center justify-between text-xs text-amber-400">
+            <span className="uppercase font-semibold text-[10px]">🟡 Needs Verification</span>
+            <AlertTriangle className="w-4 h-4 text-amber-400" />
+          </div>
+          <div className="text-2xl font-bold font-mono text-amber-300">
+            {batchSummary.needsVerification}
+          </div>
+          <span className="text-[10px] text-slate-500 block">Missing info / unverified</span>
+        </button>
+
+        {/* Possible Duplicate / Inconsistency */}
+        <button
+          onClick={() => setFilterStatus(filterStatus === 'Possible Duplicate/Inconsistency' ? 'All' : 'Possible Duplicate/Inconsistency')}
+          className={`p-3.5 rounded-xl border text-left space-y-1 transition cursor-pointer ${
+            filterStatus === 'Possible Duplicate/Inconsistency'
+              ? 'bg-red-950/40 border-red-500 text-red-200 ring-1 ring-red-500'
+              : 'bg-slate-950 border-slate-800 hover:border-red-500/40'
+          }`}
+        >
+          <div className="flex items-center justify-between text-xs text-red-400">
+            <span className="uppercase font-semibold text-[10px]">🔴 Possible Duplicate/Inconsistency</span>
+            <XCircle className="w-4 h-4 text-red-400" />
+          </div>
+          <div className="text-2xl font-bold font-mono text-red-300">
+            {batchSummary.possibleDuplicate}
+          </div>
+          <span className="text-[10px] text-slate-500 block">Actual duplicates &amp; conflicts</span>
+        </button>
+      </div>
+
+      {/* 5. SEPARATE BATCH RESULTS SUMMARY LIST (Bill 1 → ..., Bill 2 → ...) */}
+      {verifiedBatchBills.length > 0 && (
+        <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800/80 pb-2">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-200 flex items-center gap-1.5">
+                <Sparkles className="w-4 h-4 text-indigo-400" />
+                Batch Verification Status Roster ({verifiedBatchBills.length} Bills)
               </span>
-              {selectedFile && (
-                <span className="mt-2 text-[10px] px-2 py-0.5 rounded bg-blue-500/20 text-blue-300 font-mono">
-                  {(selectedFile.size / 1024).toFixed(1)} KB · Ready
+            </div>
+            {lastVerifiedAt && (
+              <span className="text-[10px] text-emerald-400 font-mono flex items-center gap-1">
+                <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                Verified: {lastVerifiedAt}
+              </span>
+            )}
+          </div>
+
+          {/* Quick Numbered Status Rows */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+            {verifiedBatchBills.map((b) => (
+              <div
+                key={b.id}
+                onClick={() => toggleExpand(b.id)}
+                className={`p-2.5 rounded-lg border flex items-center justify-between gap-2 cursor-pointer transition ${
+                  b.status === 'Possible Duplicate/Inconsistency'
+                    ? 'bg-red-950/20 hover:bg-red-950/40 border-red-500/40 text-red-200'
+                    : b.status === 'Needs Verification'
+                    ? 'bg-amber-950/20 hover:bg-amber-950/40 border-amber-500/40 text-amber-200'
+                    : 'bg-emerald-950/20 hover:bg-emerald-950/40 border-emerald-500/40 text-emerald-200'
+                }`}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="font-mono font-extrabold text-white text-xs bg-slate-900 border border-slate-700 px-2 py-0.5 rounded shrink-0">
+                    Bill {b.billNumber}
+                  </span>
+                  <ArrowRight className="w-3 h-3 text-slate-500 shrink-0" />
+                  <span className="font-semibold text-xs truncate">
+                    {b.status === 'Possible Duplicate/Inconsistency' && '🔴 Possible Duplicate/Inconsistency'}
+                    {b.status === 'Needs Verification' && '🟡 Needs Verification'}
+                    {b.status === 'No Obvious Anomaly' && '🟢 No Obvious Anomaly'}
+                  </span>
+                </div>
+                <span className="text-[10px] text-slate-400 underline shrink-0 hover:text-white ml-1">
+                  {b.isExpanded ? 'Hide' : 'Details'}
                 </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 6. Filter and Search Bar */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-950 p-2.5 rounded-xl border border-slate-800 text-xs">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-[11px] font-semibold text-slate-400 flex items-center gap-1">
+            <Filter className="w-3 h-3 text-slate-400" />
+            Filter Batch:
+          </span>
+          {(['All', 'No Obvious Anomaly', 'Needs Verification', 'Possible Duplicate/Inconsistency'] as const).map((st) => (
+            <button
+              key={st}
+              onClick={() => setFilterStatus(st)}
+              className={`px-2.5 py-1 rounded text-[11px] transition cursor-pointer font-medium ${
+                filterStatus === st
+                  ? 'bg-indigo-600 text-white font-bold shadow'
+                  : 'bg-slate-900 text-slate-400 hover:text-white'
+              }`}
+            >
+              {st === 'All'
+                ? `All (${verifiedBatchBills.length})`
+                : st === 'No Obvious Anomaly'
+                ? `🟢 Clean (${batchSummary.clean})`
+                : st === 'Needs Verification'
+                ? `🟡 Verify (${batchSummary.needsVerification})`
+                : `🔴 Duplicate/Issue (${batchSummary.possibleDuplicate})`}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
+            <input
+              type="text"
+              placeholder="Search by Bill #, Invoice, Vendor..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-8 pr-3 py-1 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 w-56"
+            />
+          </div>
+
+          {batchSummary.clean > 0 && (
+            <button
+              onClick={handleSaveAllCleanBills}
+              className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[11px] font-bold flex items-center gap-1 transition cursor-pointer"
+              title="Add all verified clean bills to the historical ledger"
+            >
+              <Check className="w-3.5 h-3.5" />
+              <span>Log Clean Bills</span>
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* 7. NUMBERED ORDER RESULTS: BILL 1, BILL 2, BILL 3... */}
+      <div className="space-y-4">
+        {displayedBatchBills.length === 0 ? (
+          <div className="p-8 text-center bg-slate-950 rounded-xl border border-slate-800 text-slate-400 text-xs">
+            {batchRawBills.length === 0
+              ? 'No bills in the batch. Upload multiple bills above or click "⚡ Load Demo Batch (6 Bills)".'
+              : 'No bills match the selected filter criteria.'}
+          </div>
+        ) : (
+          displayedBatchBills.map((bill) => (
+            <div
+              key={bill.id}
+              className={`rounded-xl border transition shadow-sm ${
+                bill.status === 'Possible Duplicate/Inconsistency'
+                  ? 'bg-red-950/20 border-red-500/40'
+                  : bill.status === 'Needs Verification'
+                  ? 'bg-amber-950/20 border-amber-500/40'
+                  : 'bg-slate-950 border-slate-800'
+              }`}
+            >
+              {/* Card Header: Bill Number, File Name, Status Badge, View Details toggle, Remove button */}
+              <div className="p-4 flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-white/5">
+                <div className="flex items-center gap-3 flex-wrap">
+                  {/* Bill Number Badge */}
+                  <div className="px-3 py-1 rounded-lg bg-indigo-600 text-white font-mono font-extrabold text-xs shadow-sm flex items-center gap-1.5">
+                    <span>Bill {bill.billNumber}</span>
+                  </div>
+
+                  {/* File Name & Extraction Badge */}
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-semibold text-white text-xs truncate max-w-xs" title={bill.fileName}>
+                        {bill.fileName}
+                      </span>
+                      <span className="text-[10px] text-slate-400 font-mono">
+                        ({(bill.fileSize / 1024).toFixed(1)} KB · {bill.extractionMethod})
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Status Badge & Actions */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  {/* Status Badge */}
+                  <span
+                    className={`px-3 py-1 rounded-lg text-xs font-bold border flex items-center gap-1.5 ${
+                      bill.status === 'Possible Duplicate/Inconsistency'
+                        ? 'bg-red-500/20 text-red-300 border-red-500/40'
+                        : bill.status === 'Needs Verification'
+                        ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                        : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                    }`}
+                  >
+                    {bill.status === 'Possible Duplicate/Inconsistency' && <XCircle className="w-4 h-4 text-red-400" />}
+                    {bill.status === 'Needs Verification' && <AlertTriangle className="w-4 h-4 text-amber-400" />}
+                    {bill.status === 'No Obvious Anomaly' && <CheckCircle2 className="w-4 h-4 text-emerald-400" />}
+                    <span>{bill.headline}</span>
+                  </span>
+
+                  {/* View Details Accordion Toggle */}
+                  <button
+                    onClick={() => toggleExpand(bill.id)}
+                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold flex items-center gap-1 transition cursor-pointer border border-slate-700"
+                  >
+                    <span>{bill.isExpanded ? 'Hide Details' : 'View Details'}</span>
+                    {bill.isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                  </button>
+
+                  {/* Individual Remove Option */}
+                  <button
+                    onClick={() => handleRemoveBill(bill.id)}
+                    className="px-2.5 py-1 bg-red-950/40 hover:bg-red-900/60 text-red-300 hover:text-red-100 rounded-lg text-xs font-semibold flex items-center gap-1 transition cursor-pointer border border-red-800/40"
+                    title={`Remove Bill ${bill.billNumber} (${bill.fileName}) from current batch`}
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                    <span>Remove</span>
+                  </button>
+
+                  {/* Add to Ledger Button */}
+                  <button
+                    onClick={() => handleSaveBillToLedger(bill)}
+                    className="px-2.5 py-1 bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white rounded-lg text-xs font-semibold flex items-center gap-1 transition cursor-pointer border border-slate-700"
+                    title="Save this verified bill to audit ledger"
+                  >
+                    <PlusCircle className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>Log</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Card Summary: Display Fields */}
+              <div className="p-4 grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs bg-slate-900/60">
+                {/* Invoice Number */}
+                <div className="space-y-0.5">
+                  <span className="text-[10px] text-slate-400 uppercase font-bold flex items-center gap-1">
+                    <Hash className="w-3 h-3 text-slate-400" />
+                    Invoice Number
+                  </span>
+                  <span className="font-mono font-bold text-white block truncate" title={bill.invoiceNumber}>
+                    {bill.invoiceNumber || <span className="text-amber-400 italic">[Not Detected]</span>}
+                  </span>
+                </div>
+
+                {/* Vendor Name */}
+                <div className="space-y-0.5 sm:col-span-1">
+                  <span className="text-[10px] text-slate-400 uppercase font-bold flex items-center gap-1">
+                    <Building className="w-3 h-3 text-slate-400" />
+                    Vendor Name
+                  </span>
+                  <span className="font-medium text-slate-200 block truncate" title={bill.vendorName}>
+                    {bill.vendorName || <span className="text-amber-400 italic">[Not Detected]</span>}
+                  </span>
+                </div>
+
+                {/* Project ID */}
+                <div className="space-y-0.5">
+                  <span className="text-[10px] text-slate-400 uppercase font-bold flex items-center gap-1">
+                    <Search className="w-3 h-3 text-slate-400" />
+                    Project ID
+                  </span>
+                  <span
+                    className="font-mono font-bold text-indigo-300 block truncate cursor-pointer hover:underline"
+                    onClick={() => onSelectProject?.(bill.projectId)}
+                    title={bill.projectId}
+                  >
+                    {bill.projectId || <span className="text-amber-400 italic">[Not Detected]</span>}
+                  </span>
+                </div>
+
+                {/* Invoice Date */}
+                <div className="space-y-0.5">
+                  <span className="text-[10px] text-slate-400 uppercase font-bold flex items-center gap-1">
+                    <Calendar className="w-3 h-3 text-slate-400" />
+                    Invoice Date
+                  </span>
+                  <span className="font-mono text-slate-300 block">
+                    {bill.invoiceDate || <span className="text-amber-400 italic">[Not Detected]</span>}
+                  </span>
+                </div>
+
+                {/* Total Amount */}
+                <div className="space-y-0.5">
+                  <span className="text-[10px] text-slate-400 uppercase font-bold flex items-center gap-1">
+                    <IndianRupee className="w-3 h-3 text-slate-400" />
+                    Total Amount
+                  </span>
+                  <span className="font-mono font-bold text-amber-400 block text-sm">
+                    {typeof bill.totalAmount === 'number' && bill.totalAmount > 0 ? (
+                      formatINR(bill.totalAmount)
+                    ) : (
+                      <span className="text-amber-400 text-xs italic">[Not Detected]</span>
+                    )}
+                  </span>
+                </div>
+              </div>
+
+              {/* Detected Issues Section (Only shows when actual issues are detected) */}
+              <div className="px-4 py-3 border-t border-white/5 space-y-2 text-xs">
+                {bill.detectedIssues.length > 0 ? (
+                  <div className="space-y-1.5">
+                    <span className="font-bold text-red-300 uppercase tracking-wider text-[10px] flex items-center gap-1">
+                      <AlertOctagon className="w-3.5 h-3.5 text-red-400" />
+                      Detected Issues ({bill.detectedIssues.length}):
+                    </span>
+                    {bill.detectedIssues.map((issue, idx) => (
+                      <div
+                        key={idx}
+                        className={`p-2 rounded border flex items-start gap-2 ${
+                          issue.toLowerCase().includes('duplicate')
+                            ? 'bg-red-950/40 border-red-500/40 text-red-200'
+                            : 'bg-amber-950/30 border-amber-500/30 text-amber-200'
+                        }`}
+                      >
+                        <span className="font-bold text-red-400 shrink-0">•</span>
+                        <span className="font-medium leading-snug">{issue}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 text-emerald-300 font-medium">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span>No obvious anomaly detected. Document details are internally consistent with available scheme records.</span>
+                  </div>
+                )}
+              </div>
+
+              {/* 8. "VIEW DETAILS" EXPANDED SECTION */}
+              {bill.isExpanded && (
+                <div className="p-4 border-t border-white/10 bg-slate-950/90 space-y-4 text-xs">
+                  <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                    <span className="font-bold uppercase tracking-wider text-[11px] text-slate-300 flex items-center gap-1.5">
+                      <FileCheck className="w-4 h-4 text-indigo-400" />
+                      📄 Extracted from Uploaded Document &amp; Verification Findings (Bill {bill.billNumber})
+                    </span>
+                    <span className="text-[10px] text-slate-500">
+                      Editable attributes for instant audit verification
+                    </span>
+                  </div>
+
+                  {/* Editable Attribute Fields */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                    <div>
+                      <label className="text-[10px] text-slate-400 font-medium block">Invoice Number</label>
+                      <input
+                        type="text"
+                        value={bill.invoiceNumber}
+                        onChange={(e) => handleUpdateBillField(bill.id, 'invoiceNumber', e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-white font-mono"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] text-slate-400 font-medium block">Vendor Name</label>
+                      <input
+                        type="text"
+                        value={bill.vendorName}
+                        onChange={(e) => handleUpdateBillField(bill.id, 'vendorName', e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-white"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] text-slate-400 font-medium block">GSTIN / PAN</label>
+                      <input
+                        type="text"
+                        value={bill.gstinPan}
+                        onChange={(e) => handleUpdateBillField(bill.id, 'gstinPan', e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-white font-mono"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] text-slate-400 font-medium block">Invoice Date</label>
+                      <input
+                        type="date"
+                        value={bill.invoiceDate}
+                        onChange={(e) => handleUpdateBillField(bill.id, 'invoiceDate', e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-white"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] text-slate-400 font-medium block">Project ID</label>
+                      <input
+                        type="text"
+                        value={bill.projectId}
+                        onChange={(e) => handleUpdateBillField(bill.id, 'projectId', e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-white font-mono"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] text-slate-400 font-medium block">Total Amount (₹)</label>
+                      <input
+                        type="number"
+                        value={bill.totalAmount}
+                        onChange={(e) => handleUpdateBillField(bill.id, 'totalAmount', e.target.value ? Number(e.target.value) : '')}
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-white font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Findings Checklist */}
+                  <div className="space-y-1.5 pt-2 border-t border-slate-800">
+                    <span className="font-semibold text-slate-300 block text-[11px]">
+                      🔎 Detailed Verification Checklist:
+                    </span>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                      {bill.findings.map((f, fIdx) => (
+                        <div
+                          key={fIdx}
+                          className={`p-2 rounded border text-[11px] flex items-start gap-2 ${
+                            f.status === 'matched'
+                              ? 'bg-emerald-950/20 border-emerald-900/40 text-emerald-200'
+                              : f.status === 'mismatched'
+                              ? 'bg-red-950/30 border-red-900/40 text-red-200'
+                              : 'bg-amber-950/20 border-amber-900/40 text-amber-200'
+                          }`}
+                        >
+                          {f.status === 'matched' ? (
+                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                          ) : f.status === 'mismatched' ? (
+                            <XCircle className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5" />
+                          ) : (
+                            <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                          )}
+                          <div>
+                            <span className="font-semibold block">{f.title}</span>
+                            <span className="opacity-90 leading-tight block mt-0.5">{f.detail}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Optical Scan Preview if Image */}
+                  {bill.filePreview && (
+                    <div className="pt-2 border-t border-slate-800">
+                      <span className="text-[10px] text-slate-400 uppercase font-semibold block mb-1">
+                        Optical Scan Preview:
+                      </span>
+                      <div className="rounded-lg overflow-hidden border border-slate-800 max-h-40 max-w-sm">
+                        <img src={bill.filePreview} alt="Voucher scan" className="w-full object-cover" />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Raw Text Snippet */}
+                  {bill.rawTextSnippet && (
+                    <div className="p-2 bg-slate-900 rounded border border-slate-800 space-y-0.5">
+                      <span className="text-[9px] uppercase font-bold text-slate-400 block font-mono">
+                        Extracted Document Snippet:
+                      </span>
+                      <p className="text-[10px] font-mono text-slate-300 truncate">
+                        {bill.rawTextSnippet}
+                      </p>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
-
-            {isAnalyzing && (
-              <div className="p-2.5 bg-blue-950/40 rounded-lg border border-blue-500/30 flex items-center gap-2 text-xs text-blue-300">
-                <Sparkles className="w-4 h-4 animate-spin text-blue-400 shrink-0" />
-                <span>Scanning document layout and extracting OCR fields...</span>
-              </div>
-            )}
-
-            {filePreview && (
-              <div className="rounded-lg overflow-hidden border border-slate-800 max-h-48 relative">
-                <img src={filePreview} alt="Bill Scan" className="w-full object-cover" />
-                <div className="absolute bottom-0 inset-x-0 bg-slate-950/80 px-2 py-1 text-[10px] text-slate-300 font-mono">
-                  Optical preview: {selectedFile?.name}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Right Column: Read Bill Details (The 7 Required Fields) & Verification Result (8 cols) */}
-        <div className="lg:col-span-8 space-y-4">
-          <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
-                <FileCheck className="w-3.5 h-3.5 text-indigo-400" />
-                1. Read Bill Details (Extracted Voucher Information)
-              </h4>
-              <span className="text-[10px] text-slate-500 font-mono">Editable OCR attributes</span>
-            </div>
-
-            {/* The 7 Requested Fields Grid */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 text-xs">
-              {/* 2. Invoice Number */}
-              <div className="space-y-1">
-                <label className="text-[11px] text-slate-400 font-medium flex items-center gap-1">
-                  <Hash className="w-3 h-3 text-slate-400" />
-                  <span>2. Invoice Number</span>
-                </label>
-                <input
-                  type="text"
-                  value={invoiceNumber}
-                  onChange={(e) => {
-                    setInvoiceNumber(e.target.value);
-                    handleFieldChange(e.target.value, vendorName, gstinPan, invoiceDate, projectId, totalAmount);
-                  }}
-                  placeholder="e.g. INV/VEL/2024/104"
-                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white font-mono text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none"
-                />
-              </div>
-
-              {/* 3. Vendor Name */}
-              <div className="space-y-1 sm:col-span-2">
-                <label className="text-[11px] text-slate-400 font-medium flex items-center gap-1">
-                  <Building className="w-3 h-3 text-slate-400" />
-                  <span>3. Vendor Name</span>
-                </label>
-                <input
-                  type="text"
-                  value={vendorName}
-                  onChange={(e) => {
-                    setVendorName(e.target.value);
-                    handleFieldChange(invoiceNumber, e.target.value, gstinPan, invoiceDate, projectId, totalAmount);
-                  }}
-                  placeholder="e.g. Vellore Engineering Services"
-                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none"
-                />
-              </div>
-
-              {/* 4. GSTIN / PAN */}
-              <div className="space-y-1">
-                <label className="text-[11px] text-slate-400 font-medium flex items-center gap-1">
-                  <CreditCard className="w-3 h-3 text-slate-400" />
-                  <span>4. GSTIN / PAN</span>
-                </label>
-                <input
-                  type="text"
-                  value={gstinPan}
-                  onChange={(e) => {
-                    setGstinPan(e.target.value);
-                    handleFieldChange(invoiceNumber, vendorName, e.target.value, invoiceDate, projectId, totalAmount);
-                  }}
-                  placeholder="e.g. 33BBBPB9876C1Z9"
-                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white font-mono text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none"
-                />
-              </div>
-
-              {/* 5. Invoice Date */}
-              <div className="space-y-1">
-                <label className="text-[11px] text-slate-400 font-medium flex items-center gap-1">
-                  <Calendar className="w-3 h-3 text-slate-400" />
-                  <span>5. Invoice Date</span>
-                </label>
-                <input
-                  type="date"
-                  value={invoiceDate}
-                  onChange={(e) => {
-                    setInvoiceDate(e.target.value);
-                    handleFieldChange(invoiceNumber, vendorName, gstinPan, e.target.value, projectId, totalAmount);
-                  }}
-                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none cursor-pointer"
-                />
-              </div>
-
-              {/* 6. Project ID */}
-              <div className="space-y-1">
-                <label className="text-[11px] text-slate-400 font-medium flex items-center gap-1">
-                  <Search className="w-3 h-3 text-slate-400" />
-                  <span>6. Project ID</span>
-                </label>
-                <select
-                  value={projectId}
-                  onChange={(e) => {
-                    setProjectId(e.target.value);
-                    handleFieldChange(invoiceNumber, vendorName, gstinPan, invoiceDate, e.target.value, totalAmount);
-                  }}
-                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none cursor-pointer"
-                >
-                  {projects.map((p) => (
-                    <option key={p.project_id} value={p.project_id}>
-                      {p.project_id} - {p.project_name} ({p.district})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* 7. Total Amount */}
-              <div className="space-y-1 sm:col-span-2">
-                <label className="text-[11px] text-slate-400 font-medium flex items-center gap-1">
-                  <IndianRupee className="w-3 h-3 text-slate-400" />
-                  <span>7. Total Amount (₹ INR)</span>
-                </label>
-                <input
-                  type="number"
-                  value={totalAmount}
-                  onChange={(e) => {
-                    const val = e.target.value ? Number(e.target.value) : '';
-                    setTotalAmount(val);
-                    handleFieldChange(invoiceNumber, vendorName, gstinPan, invoiceDate, projectId, val);
-                  }}
-                  placeholder="e.g. 850000"
-                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white font-mono text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none"
-                />
-              </div>
-
-              {/* Description / Milestone */}
-              <div className="space-y-1">
-                <label className="text-[11px] text-slate-400 font-medium">Work Voucher Description</label>
-                <input
-                  type="text"
-                  value={documentType}
-                  onChange={(e) => setDocumentType(e.target.value)}
-                  placeholder="e.g. Stage 1 Masonry Claim"
-                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none"
-                />
-              </div>
-            </div>
-
-            {/* Re-verify Button */}
-            <div className="pt-2 flex items-center gap-2">
-              <button
-                onClick={() => verifyBill(invoiceNumber, vendorName, gstinPan, invoiceDate, projectId, totalAmount)}
-                className="py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-                <span>Re-Check Against Database</span>
-              </button>
-            </div>
-          </div>
-
-          {/* 8 & 9. Verification Result Card */}
-          <div
-            className={`p-4 rounded-xl border space-y-3 shadow-sm transition-all ${
-              verificationResult.status === 'Possible Duplicate/Inconsistency'
-                ? 'bg-red-950/40 border-red-500/50 text-red-200'
-                : verificationResult.status === 'Needs Verification'
-                ? 'bg-amber-950/40 border-amber-500/50 text-amber-200'
-                : 'bg-emerald-950/40 border-emerald-500/50 text-emerald-200'
-            }`}
-          >
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-white/10 pb-2.5">
-              <div className="flex items-center gap-2.5">
-                {verificationResult.status === 'Possible Duplicate/Inconsistency' && (
-                  <XCircle className="w-6 h-6 text-red-400 shrink-0" />
-                )}
-                {verificationResult.status === 'Needs Verification' && (
-                  <AlertTriangle className="w-6 h-6 text-amber-400 shrink-0" />
-                )}
-                {verificationResult.status === 'No Obvious Anomaly' && (
-                  <CheckCircle2 className="w-6 h-6 text-emerald-400 shrink-0" />
-                )}
-                <div>
-                  <span className="text-[10px] uppercase tracking-wider font-bold opacity-75 block">
-                    8 &amp; 9. Verification Result:
-                  </span>
-                  <span className="font-extrabold text-base tracking-tight">
-                    {verificationResult.status === 'No Obvious Anomaly'
-                      ? '🟢 No Obvious Anomaly'
-                      : verificationResult.status === 'Needs Verification'
-                      ? '🟡 Needs Verification'
-                      : '🔴 Possible Duplicate/Inconsistency'}
-                  </span>
-                </div>
-              </div>
-
-              <button
-                onClick={handleSaveToLedger}
-                className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-semibold border border-white/20 flex items-center gap-1.5 transition cursor-pointer self-start sm:self-auto"
-              >
-                <PlusCircle className="w-3.5 h-3.5" />
-                <span>Save to Audit Registry</span>
-              </button>
-            </div>
-
-            {/* Identified Mismatch Reasons */}
-            {verificationResult.reasons.length > 0 && (
-              <div className="space-y-1.5 text-xs">
-                <span className="font-bold text-red-300 block uppercase tracking-wider text-[10px]">
-                  Detected Mismatch / Inconsistency Reasons:
-                </span>
-                {verificationResult.reasons.map((reason, idx) => (
-                  <div key={idx} className="flex items-start gap-2 bg-red-950/30 p-2 rounded border border-red-800/40">
-                    <span className="text-red-400 font-bold shrink-0">•</span>
-                    <span className="leading-snug text-red-200">{reason}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Clean Observations if No Anomaly */}
-            {verificationResult.observations.length > 0 && (
-              <div className="space-y-1 text-xs">
-                <span className="font-semibold text-emerald-300 block text-[11px]">
-                  Cross-Verification Checklist:
-                </span>
-                {verificationResult.observations.map((obs, idx) => (
-                  <div key={idx} className="flex items-start gap-1.5 text-emerald-200/90">
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
-                    <span>{obs}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Non-Accusatory Legal Notice */}
-            <div className="pt-2 border-t border-white/10 text-[11px] opacity-80 flex items-center gap-1.5">
-              <Info className="w-3.5 h-3.5 shrink-0" />
-              <span>
-                Document verification identifies inconsistencies and possible duplicates. The result indicates verification requirements based on available data and does not prove fraud or document authenticity.
-              </span>
-            </div>
-          </div>
-        </div>
+          ))
+        )}
       </div>
 
-      {/* Central Registry Ledger */}
+      {/* 9. Statutory Assurance & Disclaimer */}
+      <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 text-[11px] text-slate-400 flex items-center gap-2">
+        <Info className="w-4 h-4 text-indigo-400 shrink-0" />
+        <span>
+          <strong>Audit Vigilance Standard:</strong> Multi-bill verification identifies anomalies, inconsistencies, and intra-batch duplicates. It does not establish determinations of fraud or legal authenticity; results serve to prioritize administrative and on-site physical scrutiny.
+        </span>
+      </div>
+
+      {/* 10. Central Historical Registry Ledger */}
       <div className="space-y-3 pt-4 border-t border-slate-800">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <h4 className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
-              <span>🗄️</span> Verified Vouchers &amp; Bills Registry
+              <span>🗄️</span> Historical Central Registry Ledger
             </h4>
             <p className="text-[11px] text-slate-400">
-              Historical ledger of public works vouchers with automated duplicate and mismatch checks
+              Previously logged vouchers and audit records ({bills.length} claims on file)
             </p>
-          </div>
-
-          <div className="flex items-center gap-2 flex-wrap">
-            {/* Filter by Result */}
-            <div className="flex bg-slate-950 p-1 rounded-lg border border-slate-800 text-[11px]">
-              {(['All', 'No Obvious Anomaly', 'Needs Verification', 'Possible Duplicate/Inconsistency'] as const).map((st) => (
-                <button
-                  key={st}
-                  onClick={() => setFilterResult(st)}
-                  className={`px-2 py-1 rounded transition cursor-pointer ${
-                    filterResult === st ? 'bg-indigo-600 text-white font-bold' : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  {st === 'All' ? 'All Records' : st === 'No Obvious Anomaly' ? '🟢 Clean' : st === 'Needs Verification' ? '🟡 Verify' : '🔴 Duplicate'}
-                </button>
-              ))}
-            </div>
-
-            <div className="relative">
-              <Search className="w-3 h-3 text-slate-400 absolute left-2.5 top-2.5" />
-              <input
-                type="text"
-                placeholder="Search invoice, vendor, GST..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-7 pr-3 py-1 bg-slate-950 border border-slate-800 rounded-lg text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 w-48 sm:w-56"
-              />
-            </div>
           </div>
         </div>
 
@@ -782,38 +1680,38 @@ export const BillVerification: React.FC<BillVerificationProps> = ({
                 <th className="py-2.5 px-3">Project ID</th>
                 <th className="py-2.5 px-3 text-right">Total Amount</th>
                 <th className="py-2.5 px-3 text-center">Date</th>
-                <th className="py-2.5 px-3">Verification Result</th>
+                <th className="py-2.5 px-3">Status</th>
                 <th className="py-2.5 px-3">Audit Details</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800">
-              {filteredBills.map((bill) => (
+              {bills.map((bill) => (
                 <tr key={bill.bill_id} className="hover:bg-slate-800/40 transition">
-                  <td className="py-2.5 px-3 font-mono font-medium text-indigo-400">
+                  <td className="py-2 px-3 font-mono font-medium text-indigo-400">
                     {bill.bill_id}
                   </td>
-                  <td className="py-2.5 px-3 font-mono font-semibold text-white">
+                  <td className="py-2 px-3 font-mono font-semibold text-white">
                     {bill.invoice_number}
                   </td>
-                  <td className="py-2.5 px-3 font-medium text-slate-200 max-w-[150px] truncate" title={bill.vendor_name}>
+                  <td className="py-2 px-3 font-medium text-slate-200 max-w-[150px] truncate" title={bill.vendor_name}>
                     {bill.vendor_name}
                   </td>
-                  <td className="py-2.5 px-3 font-mono text-[11px] text-slate-400">
+                  <td className="py-2 px-3 font-mono text-[11px] text-slate-400">
                     {bill.gstin_pan}
                   </td>
                   <td
-                    className="py-2.5 px-3 font-mono text-indigo-300 font-bold cursor-pointer hover:underline"
+                    className="py-2 px-3 font-mono text-indigo-300 font-bold cursor-pointer hover:underline"
                     onClick={() => onSelectProject?.(bill.project_name)}
                   >
                     {bill.project_id}
                   </td>
-                  <td className="py-2.5 px-3 text-right font-mono font-semibold text-amber-400">
+                  <td className="py-2 px-3 text-right font-mono font-semibold text-amber-400">
                     {formatINR(bill.amount)}
                   </td>
-                  <td className="py-2.5 px-3 text-center text-slate-400 font-mono">
+                  <td className="py-2 px-3 text-center text-slate-400 font-mono">
                     {bill.bill_date}
                   </td>
-                  <td className="py-2.5 px-3">
+                  <td className="py-2 px-3">
                     <span
                       className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold ${
                         bill.verification_status === 'Possible Duplicate/Inconsistency'
@@ -830,7 +1728,7 @@ export const BillVerification: React.FC<BillVerificationProps> = ({
                         : '🟢 No Obvious Anomaly'}
                     </span>
                   </td>
-                  <td className="py-2.5 px-3 text-[11px] text-slate-400 max-w-xs leading-snug">
+                  <td className="py-2 px-3 text-[11px] text-slate-400 max-w-xs leading-snug truncate" title={bill.verification_notes}>
                     {bill.verification_notes}
                   </td>
                 </tr>

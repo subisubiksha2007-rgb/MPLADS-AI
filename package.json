@@ -6,16 +6,19 @@
   "scripts": {
     "dev": "vite --port 3000 --host 0.0.0.0",
     "build": "tsc && vite build",
+    "lint": "tsc --noEmit",
     "preview": "vite preview --port 3000 --host 0.0.0.0"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",
     "@vitejs/plugin-react": "^6.1.1",
     "lucide-react": "^1.49.0",
+    "pdfjs-dist": "^6.3.289",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "recharts": "^3.10.1",
-    "tailwindcss": "^4.3.3"
+    "tailwindcss": "^4.3.3",
+    "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
     "@types/node": "^26.6.3",
